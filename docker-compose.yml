@@ -1,0 +1,72 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: contract-ollama
+    ports:
+      - "11435:11434"
+    volumes:
+      - contract-ollamadata:/root/.ollama
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
+    container_name: contract-elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms1024m -Xmx1024m"
+    ports:
+      - "9201:9200"
+    volumes:
+      - contract-esdata:/usr/share/elasticsearch/data
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:15
+    container_name: contract-postgres
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=contract_rag
+    ports:
+      - "5433:5432"
+    volumes:
+      - contract-postgresdata:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  contract-rag:
+    build: .
+    container_name: contract-rag-app
+    ports:
+      - "8502:8501"
+    volumes:
+      # Mount local data directory
+      - ./data:/app/data
+      # Mount codebase for hot-reloading
+      - ./app.py:/app/app.py
+      - ./src:/app/src
+      # Persist downloaded AI models so they don't redownload!
+      - ./model_cache/huggingface:/root/.cache/huggingface
+    environment:
+      - PYTHONUNBUFFERED=1
+      # Connect to the elasticsearch service defined above
+      - ES_URL=http://contract-elasticsearch:9200
+      - OLLAMA_URL=http://contract-ollama:11434
+      - DATABASE_URL=postgresql://postgres:password@contract-postgres:5432/contract_rag
+    depends_on:
+      - elasticsearch
+      - ollama
+      - postgres
+    restart: unless-stopped
+
+volumes:
+  contract-esdata:
+  contract-ollamadata:
+  contract-postgresdata:

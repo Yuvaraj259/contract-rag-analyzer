@@ -1,0 +1,8 @@
+venv/
+.env
+__pycache__/
+faiss_index/
+data/
+.cache/
+*.gguf
+model_cache/
