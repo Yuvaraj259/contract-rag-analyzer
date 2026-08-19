@@ -1,6 +1,26 @@
 import re
+import streamlit as st
 
-def retrieve_context(query, vector_store, k=5, filter_dict=None):
+@st.cache_resource
+def get_reranker():
+    from sentence_transformers import CrossEncoder
+    return CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
+
+def rerank_docs(query, docs, top_n=5):
+    if not docs:
+        return []
+    try:
+        reranker = get_reranker()
+        pairs = [[query, doc.page_content] for doc in docs]
+        scores = reranker.predict(pairs)
+        doc_scores = list(zip(docs, scores))
+        doc_scores.sort(key=lambda x: x[1], reverse=True)
+        return [doc for doc, score in doc_scores[:top_n]]
+    except Exception as e:
+        print(f"Reranking failed: {e}")
+        return docs[:top_n]
+
+def retrieve_context(query, vector_store, k=5, filter_dict=None, enable_reranking=True):
     """
     Legacy retrieval function (keeps existing behavior if needed).
     """
@@ -91,7 +111,11 @@ def retrieve_context(query, vector_store, k=5, filter_dict=None):
                 seen_content.add(doc.page_content)
                 all_docs.append(doc)
                 
-    # Trim down to requested K after filtering
-    return all_docs[:k]
+    if enable_reranking:
+        # Rerank the combined results
+        reranked_docs = rerank_docs(query, all_docs, top_n=k)
+        return reranked_docs
+    else:
+        return all_docs[:k]
 
 

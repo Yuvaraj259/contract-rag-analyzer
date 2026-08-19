@@ -67,6 +67,26 @@ def split_into_sections(text):
         
     return sections
 
+def extract_section_numbers(section_name):
+    """Extracts section_number and clause_number if present."""
+    sec_num = "Unknown"
+    clause_num = "Unknown"
+    
+    m_art = re.search(r'ARTICLE\s+([IVX\d]+)', section_name, re.IGNORECASE)
+    if m_art:
+        sec_num = m_art.group(1)
+        
+    m_sec = re.search(r'(?:SECTION\s+)?(\d+(?:\.\d+)*)', section_name, re.IGNORECASE)
+    if m_sec:
+        if '.' in m_sec.group(1):
+            parts = m_sec.group(1).split('.')
+            sec_num = parts[0]
+            clause_num = parts[1]
+        else:
+            sec_num = m_sec.group(1)
+            
+    return sec_num, clause_num
+
 def chunk_document(text, metadata):
     """
     Splits the document into section-based chunks. If a section is too large,
@@ -83,29 +103,61 @@ def chunk_document(text, metadata):
     )
     
     chunks = []
+    chunk_index = 0
+    parent_section = "None"
+    
     for section_name, section_content in sections.items():
         if not section_content:
             continue
             
+        sec_num, clause_num = extract_section_numbers(section_name)
+        if "ARTICLE" in section_name:
+            parent_section = section_name
+            
+        # Determine page number by finding where this section starts in the original text
+        page_number = "1"
+        idx = text.find(section_content[:50])
+        if idx != -1:
+            page_matches = list(re.finditer(r'---\s*PAGE\s+(\d+)\s*---', text[:idx]))
+            if page_matches:
+                page_number = page_matches[-1].group(1)
+                
+        # Clean the page markers out of the final chunk text so it doesn't confuse the LLM
+        clean_section_content = re.sub(r'\n?---\s*PAGE\s+\d+\s*---\n?', '\n', section_content).strip()
+        
         # Add section name context to the chunk
         context_prefix = f"[{section_name}] "
         
-        if len(section_content) > 1000:
+        if len(clean_section_content) > 1000:
             # Sub-chunk if too large
-            sub_chunks = text_splitter.split_text(section_content)
+            sub_chunks = text_splitter.split_text(clean_section_content)
             for sc in sub_chunks:
                 chunk_meta = metadata.copy()
                 chunk_meta["section"] = section_name
+                chunk_meta["section_number"] = sec_num
+                chunk_meta["clause_number"] = clause_num
+                chunk_meta["page_number"] = page_number
+                chunk_meta["parent_section"] = parent_section
+                chunk_meta["chunk_index"] = chunk_index
+                chunk_meta["chunk_id"] = f"{metadata.get('document_id', 'doc_unknown')}_chunk_{chunk_index}"
                 chunks.append({
                     "text": context_prefix + sc,
                     "metadata": chunk_meta
                 })
+                chunk_index += 1
         else:
             chunk_meta = metadata.copy()
             chunk_meta["section"] = section_name
+            chunk_meta["section_number"] = sec_num
+            chunk_meta["clause_number"] = clause_num
+            chunk_meta["page_number"] = page_number
+            chunk_meta["parent_section"] = parent_section
+            chunk_meta["chunk_index"] = chunk_index
+            chunk_meta["chunk_id"] = f"{metadata.get('document_id', 'doc_unknown')}_chunk_{chunk_index}"
             chunks.append({
-                "text": context_prefix + section_content,
+                "text": context_prefix + clean_section_content,
                 "metadata": chunk_meta
             })
+            chunk_index += 1
             
     return chunks

@@ -15,7 +15,8 @@ def load_pdf(file_path):
     text = ""
     try:
         doc = fitz.open(file_path)
-        for page in doc:
+        for page_num, page in enumerate(doc):
+            text += f"\n--- PAGE {page_num + 1} ---\n"
             page_text = page.get_text("text")
             text += page_text + "\n"
             

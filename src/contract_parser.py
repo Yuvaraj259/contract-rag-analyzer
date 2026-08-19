@@ -66,13 +66,30 @@ def extract_parties(text):
     # Return up to the top 2 parties
     return clean_parties[:2]
 
+def extract_contract_type(text, title):
+    """Categorizes the structure/type of the contract."""
+    combined = (title + " " + text[:1000]).lower()
+    if "non-disclosure" in combined or "nda" in combined:
+        return "Non-Disclosure Agreement (NDA)"
+    if "master service" in combined or "msa" in combined:
+        return "Master Services Agreement (MSA)"
+    if "end user license" in combined or "eula" in combined:
+        return "End User License Agreement (EULA)"
+    if "service level" in combined or "sla" in combined:
+        return "Service Level Agreement (SLA)"
+    if "employment" in combined:
+        return "Employment Agreement"
+    return "General Commercial Contract"
+
 def extract_metadata(text, filename):
     """
     Main entry point for extracting contract-level metadata.
     This replaces the resume-centric extraction logic.
     """
+    title = extract_contract_title(text, filename)
     return {
-        "contract_title": extract_contract_title(text, filename),
+        "contract_title": title,
+        "contract_type": extract_contract_type(text, title),
         "effective_date": extract_effective_date(text),
         "parties": extract_parties(text),
         "source_file": filename

@@ -110,6 +110,37 @@ button[kind="secondary"]:hover {
 [data-testid="stHeader"] {
     background-color: #DCE8D1 !important;
 }
+
+/* Chat Messages */
+[data-testid="stChatMessage"] {
+    background-color: transparent !important;
+}
+
+/* User Message - Right Align */
+[data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) {
+    flex-direction: row-reverse;
+    text-align: right;
+}
+
+[data-testid="stChatMessage"] [data-testid="chatAvatarIcon-user"] {
+    background-color: #DCE8D1 !important;
+    color: #1A3022 !important;
+}
+[data-testid="stChatMessage"] [data-testid="chatAvatarIcon-assistant"] {
+    background-color: #93C572 !important;
+    color: #1A3022 !important;
+}
+
+/* Chat Input Bottom */
+[data-testid="stChatInput"] {
+    background-color: #F0ECE1 !important;
+    border: 1px solid #DED9CD !important;
+    border-radius: 20px !important;
+}
+[data-testid="stChatInput"] textarea {
+    background-color: transparent !important;
+    color: #6D6964 !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -127,8 +158,7 @@ if "chat_sessions" not in st.session_state:
     from src.session_store import load_sessions
     st.session_state.chat_sessions = load_sessions()
 
-st.title("📄 Contract Search & Analysis Using RAG")
-st.markdown("Upload contracts (PDF/DOCX) and ask questions to analyze legal clauses and risks.")
+# Title moved to chat area empty state
 
 # Sidebar for file upload
 with st.sidebar:
@@ -180,6 +210,8 @@ with st.sidebar:
                         cleaned_text = clean_text(raw_text)
                         # 4. Parse Metadata
                         metadata = extract_metadata(cleaned_text, file.name)
+                        metadata["document_hash"] = file_hash
+                        metadata["document_id"] = f"doc_{file_hash[:12]}"
                         
                         # 5. Save to Postgres
                         save_contract_metadata(metadata, file_hash, file.name)
@@ -240,144 +272,105 @@ with st.sidebar:
                     
     history_container = st.container()
 
-# Main QA Interface
-st.header("Ask Questions")
-
-if st.session_state.vector_store:
-    indexed_files = get_indexed_documents(st.session_state.vector_store)
-    options = ["All Contracts"] + indexed_files
-    selected_resume = st.selectbox("Target Contract", options)
-else:
-    selected_resume = "All Contracts"
+selected_resume = "All Contracts"
 
 if "qa_history" not in st.session_state:
     st.session_state.qa_history = []
 
-query_input = st.text_input("Enter your query (e.g., 'What is the limitation of liability?', 'Find the auto-renewal clause')", key="main_query_input")
 
-if st.button("Search"):
-    if not query_input:
-        st.warning("Please enter a query.")
-    elif not st.session_state.vector_store:
-        st.warning("Please upload and process some contracts first.")
-    else:
-        import uuid
-        new_session_id = str(uuid.uuid4())
-        
-        st.session_state.qa_history = []
-        import re
-        raw_queries = re.split(r'(?<=[.?!])\s+|\n+', query_input)
-        queries = [q.strip() for q in raw_queries if q.strip()]
-        for q in queries:
-            st.session_state.qa_history.append({"chain": [{"q": q, "result": None, "query_type": None}]})
-            
-        title = queries[0] if queries else "Empty Search"
-        
-        st.session_state.chat_sessions.append({
-            "id": new_session_id,
-            "title": title,
-            "qa_history": st.session_state.qa_history
-        })
-        st.session_state.current_session_id = new_session_id
-        from src.session_store import save_sessions
-        save_sessions(st.session_state.chat_sessions)
+if not st.session_state.qa_history:
+    st.markdown("""
+    <div style='display: flex; justify-content: center; align-items: center; height: 50vh;'>
+        <h1 style='color: #2c3330; font-size: 2.5rem; opacity: 0.7;'>Contract Search & Analysis</h1>
+    </div>
+    """, unsafe_allow_html=True)
 
-if st.session_state.qa_history and st.session_state.vector_store:
+if st.session_state.qa_history:
     from src.query_parser import parse_query
     from src.retriever import retrieve_context
     from src.rag_service import generate_answer, get_llm, contextualize_query
     
-    # Helper to render the results
-    def render_result_ui(q, query_type, result):
-        if query_type == "error":
-            st.error(f"Failed to generate answer: {result.get('error')}")
-            return
-            
-        st.info(f"Query routed to: **{query_type.replace('_', ' ').title()}**")
-        st.markdown("#### Answer")
-        st.write(result.get("answer", ""))
-        
-        if result.get("sources"):
-            st.markdown("#### Sources")
-            for source in result.get("sources", []):
-                st.write(f"- {source['file']}")
-                
-    num_indexed = len(get_indexed_documents(st.session_state.vector_store)) if st.session_state.vector_store else 1
-
-    # Render Sessions
     for session_idx, session in enumerate(st.session_state.qa_history):
         for node_idx, node in enumerate(session["chain"]):
             q = node["q"]
             
-            # Use smaller headers for follow-ups
-            if node_idx == 0:
-                st.markdown(f"### Q: {q}")
-            else:
-                st.markdown(f"#### ↳ Follow-up: {q}")
+            with st.chat_message("user"):
+                st.write(q)
             
             if node["result"] is None:
-                with st.spinner(f"Analyzing: {q}..."):
-                    try:
-                        llm = get_llm()
-                        
-                        search_q = q
-                        filter_dict = {"source_file": selected_resume} if selected_resume != "All Contracts" else None
-                        
-                        if node_idx > 0:
-                            history = []
-                            for prev_node in session["chain"][:node_idx]:
-                                res = prev_node.get("result") or {}
-                                ai_msg = res.get("answer", "")
-                                history.append({"q": prev_node["q"], "a": ai_msg})
-                            search_q = contextualize_query(q, history)
-                            st.caption(f"*(Interpreted as: {search_q})*")
+                with st.chat_message("assistant"):
+                    with st.spinner("Analyzing..."):
+                        try:
+                            llm = get_llm()
+                            search_q = q
+                            filter_dict = {"source_file": selected_resume} if selected_resume != "All Contracts" else None
                             
-                        parsed_query = parse_query(search_q, llm)
-                        query_type = parsed_query["query_type"]
-                        
-                        # Just do standard RAG retrieval for all contract queries
-                        retrieved_docs = retrieve_context(search_q, st.session_state.vector_store, k=15, filter_dict=filter_dict)
-                        answer = generate_answer(search_q, retrieved_docs)
-                        
-                        # Keep track of sources to pass to follow-ups
-                        sources = [{"file": doc.metadata.get("source_file", "Unknown")} for doc in retrieved_docs if doc.metadata.get("source_file")]
-                        # Deduplicate sources
-                        unique_sources = []
-                        seen_files = set()
-                        for s in sources:
-                            if s["file"] not in seen_files:
-                                seen_files.add(s["file"])
-                                unique_sources.append(s)
+                            if node_idx > 0:
+                                history = []
+                                for prev_node in session["chain"][:node_idx]:
+                                    res = prev_node.get("result") or {}
+                                    ai_msg = res.get("answer", "")
+                                    history.append({"q": prev_node["q"], "a": ai_msg})
+                                search_q = contextualize_query(q, history)
                                 
-                        result = {"answer": answer, "sources": unique_sources}
-                        
-                        node["result"] = result
-                        node["query_type"] = query_type
-                    except Exception as e:
-                        import traceback
-                        traceback.print_exc()
-                        node["result"] = {"error": str(e)}
-                        node["query_type"] = "error"
-                        
-            from src.session_store import save_sessions
-            save_sessions(st.session_state.chat_sessions)
-            render_result_ui(q, node["query_type"], node["result"])
+                            parsed_query = parse_query(search_q, llm)
+                            query_type = parsed_query["query_type"]
+                            
+                            retrieved_docs = retrieve_context(search_q, st.session_state.vector_store, k=15, filter_dict=filter_dict)
+                            answer = generate_answer(search_q, retrieved_docs)
+                            
+                            sources = [{"file": doc.metadata.get("source_file", "Unknown")} for doc in retrieved_docs if doc.metadata.get("source_file")]
+                            unique_sources = []
+                            seen_files = set()
+                            for s in sources:
+                                if s["file"] not in seen_files:
+                                    seen_files.add(s["file"])
+                                    unique_sources.append(s)
+                                    
+                            result = {"answer": answer, "sources": unique_sources}
+                            
+                            node["result"] = result
+                            node["query_type"] = query_type
+                        except Exception as e:
+                            import traceback
+                            traceback.print_exc()
+                            node["result"] = {"error": str(e)}
+                            node["query_type"] = "error"
+                            
+                from src.session_store import save_sessions
+                save_sessions(st.session_state.chat_sessions)
+                st.rerun()
+            else:
+                with st.chat_message("assistant"):
+                    res = node["result"]
+                    q_type = node["query_type"]
+                    if q_type == "error":
+                        st.error(f"Failed to generate answer: {res.get('error')}")
+                    else:
+                        st.write(res.get("answer", ""))
+
+# Fixed Chat Input at the bottom
+if prompt := st.chat_input("Ask anything..."):
+    if not st.session_state.vector_store:
+        st.warning("Please upload and process some contracts first.")
+    else:
+        if not st.session_state.qa_history:
+            import uuid
+            new_session_id = str(uuid.uuid4())
+            st.session_state.qa_history = [{"chain": [{"q": prompt, "result": None, "query_type": None}]}]
+            st.session_state.chat_sessions.append({
+                "id": new_session_id,
+                "title": prompt[:30],
+                "qa_history": st.session_state.qa_history
+            })
+            st.session_state.current_session_id = new_session_id
+        else:
+            # Append to the first QA thread in the current session
+            st.session_state.qa_history[0]["chain"].append({"q": prompt, "result": None, "query_type": None})
             
-        # UI block for follow up styling
-        with st.container(border=True):
-            st.markdown("<div style='font-family: Inter, sans-serif; color: #6D6964; margin-bottom: 8px;'>💬 Ask a follow-up about this answer</div>", unsafe_allow_html=True)
-            col1, col2 = st.columns([5, 1])
-            with col1:
-                fu_q = st.text_input("Any query in your mind?", key=f"fu_input_{session_idx}_{len(session['chain'])}", label_visibility="collapsed", placeholder="Any query in your mind?")
-            with col2:
-                if st.button("🔍 Ask", key=f"fu_btn_{session_idx}_{len(session['chain'])}", use_container_width=True):
-                    if fu_q:
-                        st.session_state.qa_history[session_idx]["chain"].append({"q": fu_q, "result": None, "query_type": None})
-                        from src.session_store import save_sessions
-                        save_sessions(st.session_state.chat_sessions)
-                        st.rerun()
-                        
-        st.divider()
+        from src.session_store import save_sessions
+        save_sessions(st.session_state.chat_sessions)
+        st.rerun()
 
 # Render Search History in Sidebar dynamically
 with history_container:
