@@ -4,6 +4,9 @@ import docx
 import boto3
 import tempfile
 from dotenv import load_dotenv
+import pytesseract
+from PIL import Image
+import io
 
 # Load environment variables (from .env)
 load_dotenv()
@@ -17,7 +20,19 @@ def load_pdf(file_path):
         doc = fitz.open(file_path)
         for page_num, page in enumerate(doc):
             text += f"\n--- PAGE {page_num + 1} ---\n"
-            page_text = page.get_text("text")
+            page_text = page.get_text("text").strip()
+            
+            # If page text is very short, it might be a scanned image. Use OCR.
+            if len(page_text) < 50:
+                try:
+                    pix = page.get_pixmap(dpi=300)
+                    img = Image.open(io.BytesIO(pix.tobytes("png")))
+                    ocr_text = pytesseract.image_to_string(img)
+                    if ocr_text.strip():
+                        page_text = ocr_text.strip()
+                except Exception as ocr_err:
+                    print(f"OCR failed for page {page_num + 1}: {ocr_err}")
+                    
             text += page_text + "\n"
             
             # Extract embedded hyperlinks

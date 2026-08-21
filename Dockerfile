@@ -7,6 +7,9 @@ WORKDIR /app
 # Install system dependencies that might be needed by some Python packages
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    tesseract-ocr \
+    tesseract-ocr-eng \
+    poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy the requirements file into the container

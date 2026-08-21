@@ -114,13 +114,16 @@ def chunk_document(text, metadata):
         if "ARTICLE" in section_name:
             parent_section = section_name
             
-        # Determine page number by finding where this section starts in the original text
+        # Determine page and line number by finding where this section starts in the original text
         page_number = "1"
+        line_number = "Unknown"
         idx = text.find(section_content[:50])
         if idx != -1:
             page_matches = list(re.finditer(r'---\s*PAGE\s+(\d+)\s*---', text[:idx]))
             if page_matches:
                 page_number = page_matches[-1].group(1)
+            
+            line_number = str(text.count('\n', 0, idx) + 1)
                 
         # Clean the page markers out of the final chunk text so it doesn't confuse the LLM
         clean_section_content = re.sub(r'\n?---\s*PAGE\s+\d+\s*---\n?', '\n', section_content).strip()
@@ -137,6 +140,7 @@ def chunk_document(text, metadata):
                 chunk_meta["section_number"] = sec_num
                 chunk_meta["clause_number"] = clause_num
                 chunk_meta["page_number"] = page_number
+                chunk_meta["line_number"] = line_number
                 chunk_meta["parent_section"] = parent_section
                 chunk_meta["chunk_index"] = chunk_index
                 chunk_meta["chunk_id"] = f"{metadata.get('document_id', 'doc_unknown')}_chunk_{chunk_index}"
@@ -151,6 +155,7 @@ def chunk_document(text, metadata):
             chunk_meta["section_number"] = sec_num
             chunk_meta["clause_number"] = clause_num
             chunk_meta["page_number"] = page_number
+            chunk_meta["line_number"] = line_number
             chunk_meta["parent_section"] = parent_section
             chunk_meta["chunk_index"] = chunk_index
             chunk_meta["chunk_id"] = f"{metadata.get('document_id', 'doc_unknown')}_chunk_{chunk_index}"

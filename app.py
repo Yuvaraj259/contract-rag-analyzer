@@ -163,7 +163,7 @@ if "chat_sessions" not in st.session_state:
 # Sidebar for file upload
 with st.sidebar:
     st.header("Upload Contracts")
-    uploaded_files = st.file_uploader("Upload PDF or DOCX", type=["pdf", "docx"], accept_multiple_files=True)
+    uploaded_files = st.file_uploader("Upload PDF, DOCX, or ZIP", type=["pdf", "docx", "zip"], accept_multiple_files=True)
     
     if st.button("Process Contracts"):
         if not uploaded_files:
@@ -179,49 +179,74 @@ with st.sidebar:
                 except Exception as e:
                     st.error(f"Failed to initialize PostgreSQL: {e}")
                     
+                # Expand ZIP files
+                expanded_files = []
+                import zipfile
+                import io
                 for file in uploaded_files:
-                    file_bytes = file.getbuffer()
-                    
-                    try:
-                        # 1. Postgres Deduplication via File Hash
-                        from src.db_service import get_file_hash, is_duplicate_file, save_contract_metadata
-                        file_hash = get_file_hash(file_bytes)
-                        
-                        if is_duplicate_file(file_hash):
-                            st.warning(f"Exact duplicate detected for {file.name}. Skipping.")
-                            continue
-                            
-                        # Prevent name-based duplicates in ES as fallback
-                        if st.session_state.vector_store:
-                            indexed = get_indexed_documents(st.session_state.vector_store)
-                            if file.name in indexed:
-                                st.warning(f"{file.name} is already indexed by name. Skipping.")
-                                continue
+                    if file.name.lower().endswith(".zip"):
+                        with zipfile.ZipFile(file, "r") as z:
+                            for zip_info in z.infolist():
+                                if zip_info.is_dir() or zip_info.filename.startswith("__MACOSX/") or zip_info.filename.split("/")[-1].startswith("."):
+                                    continue
+                                ext = os.path.splitext(zip_info.filename)[1].lower()
+                                if ext in [".pdf", ".docx", ".txt"]:
+                                    file_bytes = z.read(zip_info.filename)
+                                    expanded_files.append((os.path.basename(zip_info.filename), file_bytes))
+                    else:
+                        expanded_files.append((file.name, file.getbuffer()))
 
-                        # Save temporarily to load
-                        temp_path = os.path.join("data", "contracts", file.name)
-                        os.makedirs(os.path.dirname(temp_path), exist_ok=True)
-                        with open(temp_path, "wb") as f:
-                            f.write(file_bytes)
+                total_files = len(expanded_files)
+                if total_files == 0:
+                    st.warning("No valid documents found.")
+                else:
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+
+                    for idx, (filename, file_bytes) in enumerate(expanded_files):
+                        status_text.text(f"Processing ({idx+1}/{total_files}): {filename}")
+                        
+                        try:
+                            # 1. Postgres Deduplication via File Hash
+                            from src.db_service import get_file_hash, is_duplicate_file, save_contract_metadata
+                            file_hash = get_file_hash(file_bytes)
                             
-                        # 2. Load
-                        raw_text = load_document(temp_path)
-                        # 3. Clean
-                        cleaned_text = clean_text(raw_text)
-                        # 4. Parse Metadata
-                        metadata = extract_metadata(cleaned_text, file.name)
-                        metadata["document_hash"] = file_hash
-                        metadata["document_id"] = f"doc_{file_hash[:12]}"
-                        
-                        # 5. Save to Postgres
-                        save_contract_metadata(metadata, file_hash, file.name)
-                        
-                        # 6. Chunk
-                        chunks = chunk_document(cleaned_text, metadata)
-                        all_chunks.extend(chunks)
-                        st.success(f"Processed: {file.name}")
-                    except Exception as e:
-                        st.error(f"Error processing {file.name}: {e}")
+                            if is_duplicate_file(file_hash):
+                                continue
+                                
+                            # Prevent name-based duplicates in ES as fallback
+                            if st.session_state.vector_store:
+                                indexed = get_indexed_documents(st.session_state.vector_store)
+                                if filename in indexed:
+                                    continue
+    
+                            # Save temporarily to load
+                            temp_path = os.path.join("data", "contracts", filename)
+                            os.makedirs(os.path.dirname(temp_path), exist_ok=True)
+                            with open(temp_path, "wb") as f:
+                                f.write(file_bytes)
+                                
+                            # 2. Load
+                            raw_text = load_document(temp_path)
+                            # 3. Clean
+                            cleaned_text = clean_text(raw_text)
+                            # 4. Parse Metadata
+                            metadata = extract_metadata(cleaned_text, filename)
+                            metadata["document_hash"] = file_hash
+                            metadata["document_id"] = f"doc_{file_hash[:12]}"
+                            
+                            # 5. Save to Postgres
+                            save_contract_metadata(metadata, file_hash, filename)
+                            
+                            # 6. Chunk
+                            chunks = chunk_document(cleaned_text, metadata)
+                            all_chunks.extend(chunks)
+                        except Exception as e:
+                            st.error(f"Error processing {filename}: {e}")
+                            
+                        progress_bar.progress((idx + 1) / total_files)
+                    
+                    status_text.text("Embedding and storing documents...")
                 
                 # 5. Embed and Store
                 if all_chunks:
@@ -272,7 +297,12 @@ with st.sidebar:
                     
     history_container = st.container()
 
-selected_resume = "All Contracts"
+    if st.session_state.vector_store:
+        indexed_files = get_indexed_documents(st.session_state.vector_store)
+        options = ["All Contracts"] + indexed_files
+        selected_resume = st.sidebar.selectbox("🎯 Target Contract", options)
+    else:
+        selected_resume = "All Contracts"
 
 if "qa_history" not in st.session_state:
     st.session_state.qa_history = []
@@ -316,17 +346,41 @@ if st.session_state.qa_history:
                             parsed_query = parse_query(search_q, llm)
                             query_type = parsed_query["query_type"]
                             
-                            retrieved_docs = retrieve_context(search_q, st.session_state.vector_store, k=15, filter_dict=filter_dict)
-                            answer = generate_answer(search_q, retrieved_docs)
-                            
-                            sources = [{"file": doc.metadata.get("source_file", "Unknown")} for doc in retrieved_docs if doc.metadata.get("source_file")]
-                            unique_sources = []
-                            seen_files = set()
-                            for s in sources:
-                                if s["file"] not in seen_files:
-                                    seen_files.add(s["file"])
-                                    unique_sources.append(s)
-                                    
+                            if selected_resume == "All Contracts":
+                                indexed_docs = get_indexed_documents(st.session_state.vector_store)
+                                all_answers = []
+                                unique_sources = []
+                                seen_files = set()
+                                
+                                for doc in indexed_docs:
+                                    doc_filter = {"source_file": doc}
+                                    retrieved = retrieve_context(search_q, st.session_state.vector_store, k=10, filter_dict=doc_filter)
+                                    if retrieved:
+                                        ans = generate_answer(search_q, retrieved)
+                                        all_answers.append(f"**{doc}**\n{ans}")
+                                        
+                                        sources = [{"file": r.metadata.get("source_file", "Unknown")} for r in retrieved if r.metadata.get("source_file")]
+                                        for s in sources:
+                                            if s["file"] not in seen_files:
+                                                seen_files.add(s["file"])
+                                                unique_sources.append(s)
+                                
+                                answer = "\n\n---\n\n".join(all_answers)
+                                if not answer:
+                                    answer = "I cannot find this information in any of the provided contracts."
+                            else:
+                                filter_dict = {"source_file": selected_resume}
+                                retrieved_docs = retrieve_context(search_q, st.session_state.vector_store, k=25, filter_dict=filter_dict)
+                                answer = generate_answer(search_q, retrieved_docs)
+                                
+                                sources = [{"file": doc.metadata.get("source_file", "Unknown")} for doc in retrieved_docs if doc.metadata.get("source_file")]
+                                unique_sources = []
+                                seen_files = set()
+                                for s in sources:
+                                    if s["file"] not in seen_files:
+                                        seen_files.add(s["file"])
+                                        unique_sources.append(s)
+                                        
                             result = {"answer": answer, "sources": unique_sources}
                             
                             node["result"] = result
@@ -358,9 +412,10 @@ if prompt := st.chat_input("Ask anything..."):
             import uuid
             new_session_id = str(uuid.uuid4())
             st.session_state.qa_history = [{"chain": [{"q": prompt, "result": None, "query_type": None}]}]
+
             st.session_state.chat_sessions.append({
                 "id": new_session_id,
-                "title": prompt[:30],
+                "title": prompt[:30] + "..." if len(prompt) > 30 else prompt,
                 "qa_history": st.session_state.qa_history
             })
             st.session_state.current_session_id = new_session_id
