@@ -7,6 +7,9 @@ def split_into_sections(text):
     Heuristically splits a document (like a software contract or resume) into major sections based on common headings.
     """
     section_headers = [
+        # Introductory headers
+        r"BETWEEN", r"AND", r"RECITALS", r"PREAMBLE", r"PARTIES", r"BACKGROUND",
+        
         # Software Contract Headers
         r"ARTICLE\s+[IVX\d]+", r"SECTION\s+\d+(\.\d+)*",
         r"LICENSE GRANT", r"SCOPE OF LICENSE", r"GRANT OF LICENSE",
@@ -16,11 +19,13 @@ def split_into_sections(text):
         r"SUPPORT AND MAINTENANCE", r"MAINTENANCE",
         r"SOURCE CODE ESCROW", r"ESCROW",
         r"LIMITATION OF LIABILITY", r"LIABILITY", r"INDEMNIFICATION", r"INDEMNITY",
-        r"TERM AND TERMINATION", r"TERMINATION", r"TERM",
-        r"PAYMENT", r"FEES", r"TAXES", r"PRICING",
+        r"TERM AND TERMINATION", r"TERMINATION", r"TERM", r"TERM OF AGREEMENT", r"AGREEMENT PERIOD", r"COMMENCEMENT DATE",
+        r"PAYMENT TERMS", r"PAYMENT", r"FEES", r"TAXES", r"PRICING", r"ESTIMATION AND COMMERCIALS",
+        r"SCOPE OF WORK", r"SCOPE OF DELIVERABLES", r"ENGAGEMENT PROCESS(?: & MILESTONE)?", r"CHANGE ORDERS", r"ASSUMPTIONS AND DEPENDENCIES",
         r"WARRANTIES", r"REPRESENTATIONS", r"DISCLAIMER",
         r"GOVERNING LAW", r"JURISDICTION", r"DISPUTE RESOLUTION", r"ARBITRATION",
-        r"FORCE MAJEURE", r"MISCELLANEOUS", r"GENERAL", r"ENTIRE AGREEMENT",
+        r"FORCE MAJEURE", r"MISCELLANEOUS", r"GENERAL", r"ENTIRE AGREEMENT", r"ENTIRE AGREEMENT AND AMENDMENTS",
+        r"LANGUAGE", r"NOTICE", r"EFFECT OF HEADINGS", r"BINDING EFFECT",
         
         # Legacy Resume Headers
         "PROFILE", "SUMMARY", "OBJECTIVE",
@@ -40,10 +45,10 @@ def split_into_sections(text):
     
     matches = list(header_pattern.finditer(text))
     
-    sections = {}
+    sections = []
     if not matches:
         # If no headers found, treat the whole document as one section
-        sections["GENERAL"] = text
+        sections.append({"name": "GENERAL", "content": text, "start_idx": 0})
         return sections
         
     # Extract sections between headers
@@ -54,16 +59,16 @@ def split_into_sections(text):
         section_name = matches[i].group(1).upper()
         section_content = text[start:end].strip()
         
-        # In case of duplicate headers, append
-        if section_name in sections:
-            sections[section_name] += "\n\n" + section_content
-        else:
-            sections[section_name] = section_content
+        sections.append({
+            "name": section_name,
+            "content": section_content,
+            "start_idx": start
+        })
             
     # Also capture whatever was before the first header (usually contact info/summary)
     intro_content = text[:matches[0].start()].strip()
     if intro_content:
-        sections["INTRO"] = intro_content
+        sections.insert(0, {"name": "INTRO", "content": intro_content, "start_idx": 0})
         
     return sections
 
@@ -106,7 +111,11 @@ def chunk_document(text, metadata):
     chunk_index = 0
     parent_section = "None"
     
-    for section_name, section_content in sections.items():
+    for sec_data in sections:
+        section_name = sec_data["name"]
+        section_content = sec_data["content"]
+        idx = sec_data["start_idx"]
+        
         if not section_content:
             continue
             
@@ -115,15 +124,31 @@ def chunk_document(text, metadata):
             parent_section = section_name
             
         # Determine page and line number by finding where this section starts in the original text
-        page_number = "1"
+        pdf_page_number = "1"
         line_number = "Unknown"
-        idx = text.find(section_content[:50])
+        doc_page_number = "Unknown"
+        
         if idx != -1:
             page_matches = list(re.finditer(r'---\s*PAGE\s+(\d+)\s*---', text[:idx]))
             if page_matches:
-                page_number = page_matches[-1].group(1)
+                pdf_page_number = page_matches[-1].group(1)
+                
+            doc_page_matches = list(re.finditer(r'Page\s+(\d+)\s+of\s+\d+', text[:idx], re.IGNORECASE))
+            if doc_page_matches:
+                doc_page_number = doc_page_matches[-1].group(1)
             
-            line_number = str(text.count('\n', 0, idx) + 1)
+            line_start = text.count('\n', 0, idx) + 1
+            line_end = line_start + section_content.count('\n')
+            if line_start == line_end:
+                line_number = str(line_start)
+            else:
+                line_number = f"{line_start}-{line_end}"
+            
+        # Try to find a printed document page number like "Page 2 of 7" in the section as fallback
+        if doc_page_number == "Unknown":
+            doc_page_match = re.search(r'Page\s+(\d+)\s+of\s+\d+', section_content, re.IGNORECASE)
+            if doc_page_match:
+                doc_page_number = doc_page_match.group(1)
                 
         # Clean the page markers out of the final chunk text so it doesn't confuse the LLM
         clean_section_content = re.sub(r'\n?---\s*PAGE\s+\d+\s*---\n?', '\n', section_content).strip()
@@ -132,20 +157,47 @@ def chunk_document(text, metadata):
         context_prefix = f"[{section_name}] "
         
         if len(clean_section_content) > 1000:
-            # Sub-chunk if too large
-            sub_chunks = text_splitter.split_text(clean_section_content)
+            # Sub-chunk if too large, use raw section_content to map exact line numbers
+            sub_chunks = text_splitter.split_text(section_content)
             for sc in sub_chunks:
+                sc_idx = text.find(sc[:100], idx)
+                if sc_idx == -1:
+                    sc_idx = text.find(sc[:50], idx)
+                    
+                sc_pdf_page = pdf_page_number
+                sc_line_num = line_number
+                
+                if sc_idx != -1:
+                    page_matches = list(re.finditer(r'---\s*PAGE\s+(\d+)\s*---', text[:sc_idx]))
+                    if page_matches:
+                        sc_pdf_page = page_matches[-1].group(1)
+                        
+                    doc_page_matches = list(re.finditer(r'Page\s+(\d+)\s+of\s+\d+', text[:sc_idx], re.IGNORECASE))
+                    if doc_page_matches:
+                        sc_doc_page = doc_page_matches[-1].group(1)
+                    else:
+                        sc_doc_page = doc_page_number
+                        
+                    sc_line_start = text.count('\n', 0, sc_idx) + 1
+                    sc_line_end = sc_line_start + sc.count('\n')
+                    sc_line_num = f"{sc_line_start}-{sc_line_end}" if sc_line_start != sc_line_end else str(sc_line_start)
+                
+                # Now clean the page markers out of the sub-chunk before embedding
+                clean_sc = re.sub(r'\n?---\s*PAGE\s+\d+\s*---\n?', '\n', sc).strip()
+                
                 chunk_meta = metadata.copy()
                 chunk_meta["section"] = section_name
                 chunk_meta["section_number"] = sec_num
                 chunk_meta["clause_number"] = clause_num
-                chunk_meta["page_number"] = page_number
-                chunk_meta["line_number"] = line_number
+                chunk_meta["page_number"] = sc_pdf_page
+                chunk_meta["pdf_page_number"] = sc_pdf_page
+                chunk_meta["document_page_number"] = sc_doc_page if sc_idx != -1 else doc_page_number
+                chunk_meta["line_number"] = sc_line_num
                 chunk_meta["parent_section"] = parent_section
                 chunk_meta["chunk_index"] = chunk_index
                 chunk_meta["chunk_id"] = f"{metadata.get('document_id', 'doc_unknown')}_chunk_{chunk_index}"
                 chunks.append({
-                    "text": context_prefix + sc,
+                    "text": context_prefix + clean_sc,
                     "metadata": chunk_meta
                 })
                 chunk_index += 1
@@ -154,7 +206,9 @@ def chunk_document(text, metadata):
             chunk_meta["section"] = section_name
             chunk_meta["section_number"] = sec_num
             chunk_meta["clause_number"] = clause_num
-            chunk_meta["page_number"] = page_number
+            chunk_meta["page_number"] = pdf_page_number # Legacy compat
+            chunk_meta["pdf_page_number"] = pdf_page_number
+            chunk_meta["document_page_number"] = doc_page_number
             chunk_meta["line_number"] = line_number
             chunk_meta["parent_section"] = parent_section
             chunk_meta["chunk_index"] = chunk_index

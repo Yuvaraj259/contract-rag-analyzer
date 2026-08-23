@@ -31,29 +31,37 @@ def extract_contract_title(text, filename=""):
 
 def extract_effective_date(text):
     """Attempts to find the Effective Date of the agreement."""
-    # Look for common date patterns following "Effective Date" or "Dated as of"
-    date_regex = r"(?:effective date|dated as of|dated)[^\n\w]{0,30}?((?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2},?\s+\d{4}|\d{1,2}[-/]\d{1,2}[-/]\d{2,4})"
+    # Look for common date patterns following "Effective Date", "Dated as of", "effective from", etc.
+    date_regex = r"(?:effective date|dated as of|dated|effective from)[^\n\w]{0,30}?((?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2},?\s+\d{4}|\d{1,2}[-/]\d{1,2}[-/]\d{2,4}|\d{1,2}(?:st|nd|rd|th)?\s+(?:day of\s+)?(?:january|february|march|april|may|june|july|august|september|october|november|december)[,\s]+\d{4})"
     
-    # Search in the first 2000 characters (usually where the intro is)
-    match = re.search(date_regex, text[:2000], re.IGNORECASE)
+    # Search in the first 3000 characters
+    match = re.search(date_regex, text[:3000], re.IGNORECASE)
     if match:
         return match.group(1).strip()
-    return "Unknown"
+    return None
 
 def extract_parties(text):
     """Attempts to extract the organizations involved in the contract."""
     parties = set()
     
-    # Heuristic 1: Regex for "by and between [Party 1] and [Party 2]"
-    between_regex = r"by and between\s+([A-Z][a-zA-Z0-9\s,&]+?)(?:\s+\(|,)\s*and\s+([A-Z][a-zA-Z0-9\s,&]+?)(?:\s+\(|,)"
-    match = re.search(between_regex, text[:2000], re.IGNORECASE)
-    if match:
-        parties.add(match.group(1).strip())
-        parties.add(match.group(2).strip())
+    # Priority 1: Multi-line or single-line BETWEEN ... AND ...
+    between_patterns = [
+        r"(?:by and between|between|this agreement is between)[\s:]+([A-Z][a-zA-Z0-9\s,&.\-]+?)(?:\s+\(|,).+?(?:and)[\s:]+([A-Z][a-zA-Z0-9\s,&.\-]+?)(?:\s+\(|,)",
+        r"BETWEEN:[\s]*([^\n(]+).*?AND:[\s]*([^\n(]+)"
+    ]
     
-    # Heuristic 2: Use SpaCy NER to find ORGs in the first 1000 characters
+    for pattern in between_patterns:
+        match = re.search(pattern, text[:3000], re.IGNORECASE | re.DOTALL)
+        if match:
+            parties.add(match.group(1).strip())
+            parties.add(match.group(2).strip())
+            break
+            
+    # Priority 2: Use SpaCy NER to find ORGs in the first 1500 characters, BUT ignore known non-party text
     if not parties and nlp:
-        doc = nlp(text[:1000]) 
+        # Strip out common reference text that trips up NER
+        safe_text = re.sub(r'(?i)(united nations centre for trade facilitation|electronic business|un/cefact|applicable laws)', '', text[:1500])
+        doc = nlp(safe_text) 
         for ent in doc.ents:
             if ent.label_ == "ORG":
                 org_name = ent.text.strip().replace('\n', ' ')

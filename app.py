@@ -329,63 +329,78 @@ if st.session_state.qa_history:
             
             if node["result"] is None:
                 with st.chat_message("assistant"):
-                    with st.spinner("Analyzing..."):
-                        try:
-                            llm = get_llm()
-                            search_q = q
-                            filter_dict = {"source_file": selected_resume} if selected_resume != "All Contracts" else None
+                    status = st.status("Analyzing...", expanded=True)
+                    answer_placeholder = st.empty()
+                    try:
+                        llm = get_llm()
+                        search_q = q
+                        filter_dict = {"source_file": selected_resume} if selected_resume != "All Contracts" else None
+                        
+                        if node_idx > 0:
+                            history = []
+                            for prev_node in session["chain"][:node_idx]:
+                                res = prev_node.get("result") or {}
+                                ai_msg = res.get("answer", "")
+                                history.append({"q": prev_node["q"], "a": ai_msg})
+                            search_q = contextualize_query(q, history)
                             
-                            if node_idx > 0:
-                                history = []
-                                for prev_node in session["chain"][:node_idx]:
-                                    res = prev_node.get("result") or {}
-                                    ai_msg = res.get("answer", "")
-                                    history.append({"q": prev_node["q"], "a": ai_msg})
-                                search_q = contextualize_query(q, history)
-                                
-                            parsed_query = parse_query(search_q, llm)
-                            query_type = parsed_query["query_type"]
+                        from src.query_parser import decompose_query
+                        parsed_query = parse_query(search_q, llm)
+                        query_type = parsed_query["query_type"]
+                        
+                        status.write("Decomposing complex query...")
+                        sub_queries = decompose_query(search_q, llm)
+                        
+                        all_final_answers = []
+                        unique_sources = []
+                        seen_files = set()
+                        
+                        for idx, sub_q in enumerate(sub_queries):
+                            status.update(label=f"Analyzing... (Processing question {idx+1}/{len(sub_queries)})")
+                            status.write(f"🔍 Executing sub-query: {sub_q}")
                             
                             if selected_resume == "All Contracts":
                                 indexed_docs = get_indexed_documents(st.session_state.vector_store)
-                                all_answers = []
-                                unique_sources = []
-                                seen_files = set()
-                                
+                                doc_answers = []
                                 for doc in indexed_docs:
                                     doc_filter = {"source_file": doc}
-                                    retrieved = retrieve_context(search_q, st.session_state.vector_store, k=10, filter_dict=doc_filter)
+                                    retrieved = retrieve_context(sub_q, st.session_state.vector_store, k=10, filter_dict=doc_filter)
                                     if retrieved:
-                                        ans = generate_answer(search_q, retrieved)
-                                        all_answers.append(f"**{doc}**\n{ans}")
-                                        
+                                        ans = generate_answer(sub_q, retrieved)
+                                        doc_answers.append(f"**{doc}**\n{ans}")
                                         sources = [{"file": r.metadata.get("source_file", "Unknown")} for r in retrieved if r.metadata.get("source_file")]
                                         for s in sources:
                                             if s["file"] not in seen_files:
                                                 seen_files.add(s["file"])
                                                 unique_sources.append(s)
-                                
-                                answer = "\n\n---\n\n".join(all_answers)
-                                if not answer:
-                                    answer = "I cannot find this information in any of the provided contracts."
+                                if doc_answers:
+                                    all_final_answers.append(f"### {sub_q}\n\n" + "\n\n".join(doc_answers))
                             else:
                                 filter_dict = {"source_file": selected_resume}
-                                retrieved_docs = retrieve_context(search_q, st.session_state.vector_store, k=25, filter_dict=filter_dict)
-                                answer = generate_answer(search_q, retrieved_docs)
+                                retrieved_docs = retrieve_context(sub_q, st.session_state.vector_store, k=8, filter_dict=filter_dict)
+                                ans = generate_answer(sub_q, retrieved_docs)
+                                all_final_answers.append(f"**{sub_q}**\n\n{ans}")
                                 
                                 sources = [{"file": doc.metadata.get("source_file", "Unknown")} for doc in retrieved_docs if doc.metadata.get("source_file")]
-                                unique_sources = []
-                                seen_files = set()
                                 for s in sources:
                                     if s["file"] not in seen_files:
                                         seen_files.add(s["file"])
                                         unique_sources.append(s)
                                         
-                            result = {"answer": answer, "sources": unique_sources}
+                            # Live update the UI with the answers generated so far
+                            answer_placeholder.markdown("\n\n---\n\n".join(all_final_answers))
+                                        
+                        answer = "\n\n---\n\n".join(all_final_answers)
+                        if not answer:
+                            answer = "I cannot find this information in the provided contract."
+                            answer_placeholder.markdown(answer)
                             
-                            node["result"] = result
-                            node["query_type"] = query_type
-                        except Exception as e:
+                        status.update(label="Analysis Complete!", state="complete", expanded=False)
+                        result = {"answer": answer, "sources": unique_sources}
+                        
+                        node["result"] = result
+                        node["query_type"] = query_type
+                    except Exception as e:
                             import traceback
                             traceback.print_exc()
                             node["result"] = {"error": str(e)}

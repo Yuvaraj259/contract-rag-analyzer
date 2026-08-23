@@ -12,8 +12,35 @@ def get_llm():
         model=model_name,
         base_url=ollama_url,
         temperature=0.1,
-        num_ctx=8192
+        num_ctx=4096
     )
+
+def check_answerability(query, context):
+    llm = get_llm()
+    prompt = f"""
+    You are an Answerability Gate for a Legal RAG system.
+    Review the following Context and determine if it explicitly contains the answer to the Query.
+    
+    Context:
+    {context}
+    
+    Query: {query}
+    
+    Return ONLY a JSON object with this exact schema:
+    {{
+      "status": "SUPPORTED" or "PARTIALLY_SUPPORTED" or "NOT_FOUND" or "CONFLICTING"
+    }}
+    """
+    try:
+        import json
+        raw = llm.invoke(prompt).strip()
+        start = raw.find('{')
+        end = raw.rfind('}') + 1
+        if start != -1 and end != -1:
+            return json.loads(raw[start:end]).get("status", "SUPPORTED")
+    except Exception:
+        pass
+    return "SUPPORTED"
 
 def validate_answer(query, answer, retrieved_docs, metadata_summary=""):
     llm = get_llm()
@@ -28,67 +55,43 @@ def validate_answer(query, answer, retrieved_docs, metadata_summary=""):
     prompt = f"""
     You are a strict Answer Validator for a Legal RAG system.
     
-    Provided Context and Metadata:
-    {metadata_summary}
-    
+    Provided Context:
     {context}
     
     Proposed AI Answer:
     {answer}
     
-    TASK: Verify if the Proposed AI Answer is supported by the Provided Context and Metadata.
+    TASK: Verify if the Proposed AI Answer is supported by the Provided Context.
     
     RULES:
-    1. If the answer accurately reflects facts found in the context or metadata, mark "supported": true.
-    2. Do not reject an answer just because it includes a common abbreviation (like LLC, Inc., or an acronym) or slight rephrasing of the context.
-    3. If the answer relies on information completely missing from both the context and metadata, mark "supported": false.
-    4. If "supported" is false and the answer is attempting to provide factual information not present, set "should_abstain": true.
-    5. Focus on verifying if the entities mentioned exist in the contract as parties. Do not reject answers based on semantic technicalities (e.g., calling an individual a 'company').
+    1. The Context TEXT is the ultimate ground truth. If the metadata is missing but the text contains the answer, the answer is SUPPORTED.
+    2. If the answer accurately reflects facts found in the context text, mark "supported": true.
+    3. Do not reject an answer just because it includes a common abbreviation or slight rephrasing of the context.
+    4. ARITHMETIC EXCEPTION: If the answer includes a mathematical calculation (like a total sum) that is correctly derived from numbers explicitly present in the Context, it IS supported. Do not flag correct arithmetic as an unsupported claim.
+    5. If the answer relies on factual claims completely missing from the context text, mark "supported": false and list the unsupported claims.
     
     Return ONLY a valid JSON object matching this schema:
     {{
       "supported": true/false,
-      "should_abstain": true/false,
-      "unsupported_claims": ["claim1", "claim2"]
+      "unsupported_claims": ["claim1"]
     }}
     """
     try:
         import json
         raw_validated = llm.invoke(prompt).strip()
-        print("====== VALIDATOR PROMPT ======")
-        print(prompt)
-        print("====== VALIDATOR RAW RESPONSE ======")
-        print(raw_validated)
-        print("====================================")
         start_idx = raw_validated.find('{')
         end_idx = raw_validated.rfind('}') + 1
         if start_idx != -1 and end_idx != -1:
-            json_str = raw_validated[start_idx:end_idx]
-            val_result = json.loads(json_str)
+            val_result = json.loads(raw_validated[start_idx:end_idx])
         else:
-            val_result = {"supported": True, "should_abstain": False, "unsupported_claims": []}
+            val_result = {"supported": True, "unsupported_claims": []}
             
-        if val_result.get("supported"):
-            validated_text = answer
         if not val_result.get("supported", True):
-            # We will no longer hard-block the answer. If the validator is unsure, we just append a warning.
-            # This prevents false-positive rejections of perfectly valid answers.
-            warning = "\n\n**System Warning:** The following claims could not be firmly verified by the strict validator: " + ", ".join(val_result.get("unsupported_claims", []))
-            
-            # Append source citation
-            first_doc = retrieved_docs[0] if retrieved_docs else None
-            if first_doc:
-                return answer + warning + f"\n\nSource:\nSection: {first_doc.metadata.get('section', 'Unknown')}\nPage: {first_doc.metadata.get('page_number', 'Unknown')}\nLine: {first_doc.metadata.get('line_number', 'Unknown')}\nDocument: {first_doc.metadata.get('source_file', 'Unknown')}"
-            return answer + warning
-        
-        # Default append source
-        if "| Question |" in answer or "|---|---|" in answer:
-            # If the answer is a table (multi-question), the LLM provides citations in the table itself.
-            validated_text = answer
-        else:
-            validated_text = answer + f"\n\nSource:\nSection: {retrieved_docs[0].metadata.get('section', 'Unknown')}\nPage: {retrieved_docs[0].metadata.get('page_number', 'Unknown')}\nLine: {retrieved_docs[0].metadata.get('line_number', 'Unknown')}\nDocument: {retrieved_docs[0].metadata.get('source_file', 'Unknown')}"
-
-        return validated_text
+            unsupported = val_result.get("unsupported_claims", [])
+            if unsupported:
+                warning = "\n\n**System Warning:** The following claims could not be verified by the retrieved text: " + ", ".join(unsupported)
+                return answer + warning
+        return answer
     except Exception as e:
         print(f"Validator Error: {e}")
         return answer
@@ -98,125 +101,68 @@ def generate_answer(query, retrieved_docs):
     if not llm:
         return "LLM not available to answer this query."
         
-    # Context Budget Manager
-    MAX_CONTEXT_TOKENS = 6000
-    SYSTEM_PROMPT_TOKENS = 250
-    QUESTION_TOKENS = len(query) // 4
-    RESERVED_OUTPUT = 1000
-    
-    available_budget = MAX_CONTEXT_TOKENS - SYSTEM_PROMPT_TOKENS - QUESTION_TOKENS - RESERVED_OUTPUT
-    
-    selected_chunks = []
-    current_tokens = 0
-    
-    print("\n" + "="*50)
-    print("CONTEXT BUILDER BUDGET LOG")
-    print("="*50)
-    
-    for i, doc in enumerate(retrieved_docs):
-        chunk_text = f"Source: {doc.metadata.get('source_file', 'Unknown')} (Section: {doc.metadata.get('section', 'General')}, Page: {doc.metadata.get('page_number', 'Unknown')}, Line: {doc.metadata.get('line_number', 'Unknown')})\n{doc.page_content}\n\n"
-        chunk_tokens = len(chunk_text) // 4
+    # Build Context
+    context_chunks = []
+    for doc in retrieved_docs:
+        line_num_str = str(doc.metadata.get('line_number', 'Unknown'))
+        numbered_text = doc.page_content
         
-        if current_tokens + chunk_tokens <= available_budget:
-            selected_chunks.append(doc)
-            current_tokens += chunk_tokens
-            
-            print(f"Rank {i+1}")
-            print(f"Section: {doc.metadata.get('section', 'Unknown')}")
-            print(f"Chunk ID: {doc.metadata.get('chunk_id', 'Unknown')}")
-            print(f"Page: {doc.metadata.get('page_number', 'Unknown')}")
-            print(f"Reranker Score: {doc.metadata.get('rerank_score', 'N/A')}")
-            print(f"Tokens: {chunk_tokens}")
-            print("-" * 20)
-        else:
-            break
-            
-    total_estimated = SYSTEM_PROMPT_TOKENS + QUESTION_TOKENS + current_tokens + RESERVED_OUTPUT
-    print(f"Context statistics:")
-    print(f"Retrieved chunks: {len(retrieved_docs)}")
-    print(f"Selected chunks: {len(selected_chunks)}")
-    print(f"System prompt tokens: {SYSTEM_PROMPT_TOKENS}")
-    print(f"User question tokens: {QUESTION_TOKENS}")
-    print(f"Context tokens: {current_tokens}")
-    print(f"Reserved output tokens: {RESERVED_OUTPUT}")
-    print(f"Total estimated tokens: {total_estimated}")
-    print(f"Configured Ollama context: 8192")
-    print("="*50 + "\n")
+        if line_num_str != 'Unknown':
+            try:
+                start_line = int(line_num_str.split('-')[0])
+                lines = doc.page_content.split('\n')
+                numbered_lines = [f"[Line {start_line + i}] {line}" for i, line in enumerate(lines)]
+                numbered_text = '\n'.join(numbered_lines)
+            except ValueError:
+                pass
+                
+        chunk_text = f"Source: Document: {doc.metadata.get('source_file', 'Unknown')}, PDF Page: {doc.metadata.get('pdf_page_number', doc.metadata.get('page_number', 'Unknown'))}, Document Page: {doc.metadata.get('document_page_number', 'Unknown')}, Section: {doc.metadata.get('section', 'Unknown')}\n{numbered_text}\n"
+        context_chunks.append(chunk_text)
+        
+    context = "\n\n".join(context_chunks)
     
-    # Build a Metadata Summary for all unique documents retrieved
+    # Pre-generation Answerability Gate
+    status = check_answerability(query, context)
+    if status == "NOT_FOUND":
+        return "I cannot find this information in the provided contract."
+        
     metadata_summary = ""
     seen_docs = set()
-    for chunk in selected_chunks:
-        m = chunk.metadata
-        source_file = m.get('source_file', 'Unknown')
+    for doc in retrieved_docs:
+        source_file = doc.metadata.get('source_file', 'Unknown')
         if source_file not in seen_docs and source_file != 'Unknown':
             seen_docs.add(source_file)
-            parties = m.get('parties', [])
-            parties_str = ", ".join(parties) if isinstance(parties, list) else str(parties)
-            
-            metadata_summary += f"""
-    --- CONTRACT METADATA CHEAT SHEET FOR {source_file} ---
-    Title: {m.get('contract_title', 'Unknown')}
-    Type: {m.get('contract_type', 'Unknown')}
-    Effective Date: {m.get('effective_date', 'Unknown')}
-    Parties Involved: {parties_str}
-    -------------------------------------------------------
-    """
-    
-    context = "\n\n".join([f"Source: {doc.metadata.get('source_file', 'Unknown')} (Section: {doc.metadata.get('section', 'General')}, Page: {doc.metadata.get('page_number', 'Unknown')}, Line: {doc.metadata.get('line_number', 'Unknown')})\n{doc.page_content}" for doc in selected_chunks])
-    
-    prompt = f"""
-    You are an expert Legal Analyst and Contract Manager.
-    Answer the following question based ONLY on the provided contract clauses and metadata.
-    
-    CRITICAL RULES:
-    1. ZERO HALLUCINATION: If the requested information is not in the context or metadata, clearly state: "I cannot find this information in the provided contract clauses." Do not assume standard legal practices.
-    2. BE PRECISE: Quote specific terms, dollar amounts, and days of notice exactly as they appear in the text.
-    3. DO NOT INVENT CITATIONS: Do not mention clause numbers or section names unless they are explicitly written in the text. The system will automatically attach the official source metadata.
-    4. NO PREAMBLE: Answer directly. Do not say "Based on the provided context..."
-    5. ALLOWED INTERPRETATIONS:
-       - extracting an answer explicitly stated in the retrieved text OR the Metadata Cheat Sheet
-       - paraphrasing explicit contract language
-       - mapping legal wording to the user's terminology
-       - interpreting "shall not exceed" as a liability cap
-       - interpreting "Except for..." as exclusions/carve-outs
-    6. NOT ALLOWED:
-       - adding facts not present in the context
-       - assuming standard legal practice
-       - inventing dollar values, dates, parties, obligations, or clauses
-       - using external legal knowledge
-    7. NO LOGICAL LEAPS: If the contract states X happens under condition Y, DO NOT assume the opposite happens under other conditions unless explicitly stated. For example, if it says "If A terminates, B gets paid", do not assume "If B terminates, B gets nothing" unless it is explicitly written.
-    8. BE DETAILED: Provide comprehensive, nuanced legal answers. If there are multiple conditions, caveats, or exceptions, list them clearly.
-    9. USE EXACT QUOTES: Whenever possible, provide the exact wording directly from the contract wrapped in quotation marks. Do not summarize or paraphrase if the original text provides a more accurate answer. Rely heavily on extractive question-answering.
-    10. MANDATORY CITATIONS: For every single answer you provide (whether in a paragraph or a table), you MUST explicitly state the Document, Page, and Line number where you found the information.
+            parties_str = ", ".join(doc.metadata.get('parties', []))
+            metadata_summary += f"Metadata for {source_file}: Title: {doc.metadata.get('contract_title', 'Unknown')}, Date: {doc.metadata.get('effective_date', 'Unknown')}, Parties: {parties_str}\n"
 
-    Use semantic equivalence when searching for answers, but when presenting the answer, stick closely to the original contract language.
+    prompt = f"""You are an expert Legal Analyst. Answer the following question based ONLY on the provided contract context.
     
-    IMPORTANT FORMATTING RULE: 
-    If the user's prompt contains multiple questions, you MUST format your final response as a clean Markdown table with exactly three columns: "Question", "Answer", and "Source Citation". In the "Source Citation" column, provide the Document, Section, Page, and Line number where you found the answer based on the provided Context. Do not output anything outside of the table.
-    
-    EXAMPLE TABLE OUTPUT (for multiple questions):
-    | Question | Answer | Source Citation |
-    |---|---|---|
-    | What is the liability cap? | The liability is capped at the total fees paid during the preceding 12 months. | Document: 1.pdf, Section: LIABILITY, Page: 4, Line: 152 |
-    | What is the governing law? | The agreement is governed by the laws of California. | Document: 1.pdf, Section: MISCELLANEOUS, Page: 9, Line: 310 |
-    
-    EXAMPLE REGULAR OUTPUT (for a single question):
-    The liability is capped at the total fees paid during the preceding 12 months (Document: 1.pdf, Page: 4, Line: 152).
+    {metadata_summary}
+    Context:
+    {context}
     
     Question: {query}
     
-    Context:
-    {metadata_summary}
+    CRITICAL RULES:
+    1. THE TEXT IS AUTHORITATIVE: If the Metadata says "Unknown" but the actual Context text contains the answer, use the text.
+    2. ZERO HALLUCINATION: Do not invent facts.
+    3. EXACT CITATIONS: The Provided Context has line numbers in brackets at the start of each line, like [Line 77]. Use these to determine EXACTLY which lines the answer came from.
+    4. CITATION FORMAT: You MUST append the exact citation to the VERY END of your answer on a new line. Do not put it in the middle. Use THIS EXACT format:
+    Source: Document: [file], PDF Page: [x], Document Page: [y], Lines: [start-end], Section: [z]
+    5. NO PREAMBLE: Answer directly. DO NOT repeat the question. DO NOT say "The answer is" or "Based on the context".
+    6. NARROW LINES: For the "Lines:" field, you MUST narrow down your citation to the EXACT lines that support your answer (e.g. Lines: 78-79). Do not copy the entire range of the chunk.
+    7. ARITHMETIC REQUIRED: If the question requires adding or combining amounts, you MUST write out the step-by-step arithmetic equation before providing the final answer (e.g. '100k + 50k = 150k').
     
-    {context}
+    Output Format Example:
+    The total cost of the project is USD 50,000.
     
-    Answer:
-    """
+    Source: Document: example.pdf, PDF Page: 3, Document Page: 2, Lines: 45-46, Section: FEES
+    
+    Answer:"""
     
     try:
-        response = llm.invoke(prompt)
-        validated_response = validate_answer(query, response, selected_chunks, metadata_summary)
+        response = llm.invoke(prompt).strip()
+        validated_response = validate_answer(query, response, retrieved_docs, metadata_summary)
         return validated_response
     except Exception as e:
         return f"Error generating answer: {str(e)}"
