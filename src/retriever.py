@@ -221,3 +221,112 @@ def retrieve_context(query, vector_store, k=5, filter_dict=None, enable_rerankin
         return fetch_neighbors(all_docs[:k], vector_store)
 
 
+def get_group_context(queries, vector_store, top_k=1):
+    """
+    Evaluates a batch of queries to find a confident group-level document context.
+    Returns (target_docs, is_confident)
+    """
+    if not vector_store:
+        return [], False
+        
+    doc_scores = {}
+    for q in queries:
+        retrieved = retrieve_context(q, vector_store, k=4, filter_dict=None, enable_reranking=True)
+        for i, doc in enumerate(retrieved):
+            source = doc.metadata.get("source_file")
+            if source:
+                score = max(4 - i, 1)
+                doc_scores[source] = doc_scores.get(source, 0) + score
+                
+    if not doc_scores:
+        return [], False
+        
+    sorted_docs = sorted(doc_scores.items(), key=lambda x: x[1], reverse=True)
+    if len(sorted_docs) == 1:
+        return [sorted_docs[0][0]], True
+        
+    top_score = sorted_docs[0][1]
+    runner_up = sorted_docs[1][1]
+    
+    # Confident if top doc dominates the batch (avg rank 1 across almost all queries)
+    # Using 3.5 multiplier ensures it must be consistently highly ranked on ALMOST EVERY query to be a Safe Batch Context.
+    is_confident = (top_score >= len(queries) * 3.5) and (top_score >= runner_up + 4)
+    return [sorted_docs[0][0]], is_confident
+
+def get_question_context(query, vector_store):
+    """
+    Evaluates a single query to find an explicit document match via full Global Search.
+    Returns (target_docs, is_confident)
+    """
+    if not vector_store:
+        return [], False
+        
+    retrieved = retrieve_context(query, vector_store, k=4, filter_dict=None, enable_reranking=True)
+    if not retrieved:
+        return [], False
+        
+    # Since we don't have access to raw Cross-Encoder scores here, we check chunk density.
+    # If a document owns 2 or more of the top 3 most relevant chunks, it's a confident match.
+    doc_counts = {}
+    for doc in retrieved[:3]:
+        source = doc.metadata.get("source_file")
+        if source:
+            doc_counts[source] = doc_counts.get(source, 0) + 1
+            
+    sorted_docs = sorted(doc_counts.items(), key=lambda x: x[1], reverse=True)
+    if not sorted_docs:
+        return [], False
+        
+    top_doc, count = sorted_docs[0]
+    is_confident = (count >= 2)
+    return [top_doc], is_confident
+
+def check_explicit_intent(query, vector_store):
+    """
+    Fast BM25 check against metadata to see if a specific document is explicitly named.
+    Avoids expensive Vector/Cross-Encoder searches if we can resolve context instantly.
+    """
+    if not vector_store:
+        return [], False
+        
+    try:
+        es_client = vector_store.client
+        from src.vector_store import INDEX_NAME
+        
+        body = {
+            "query": {
+                "multi_match": {
+                    "query": query,
+                    "fields": ["metadata.contract_title^3", "metadata.source_file^5", "metadata.parties^4"],
+                    "type": "best_fields"
+                }
+            },
+            "size": 2
+        }
+        res = es_client.search(index=INDEX_NAME, body=body)
+        hits = res.get("hits", {}).get("hits", [])
+        
+        if not hits:
+            return [], False
+            
+        top_hit = hits[0]
+        score = top_hit.get("_score", 0)
+        
+        # Must have a solid match score
+        if score < 5.0:
+            return [], False
+            
+        # Must beat runner up decisively to prove it's explicitly one contract, not a generic keyword
+        if len(hits) > 1:
+            runner_up_score = hits[1].get("_score", 0)
+            # A flat delta is much safer than a multiplier for BM25 scores
+            if score < runner_up_score + 3.0:
+                return [], False
+                
+        source = top_hit["_source"].get("metadata", {}).get("source_file")
+        if source:
+            return [source], True
+    except Exception as e:
+        print(f"Explicit intent check failed: {e}")
+        
+    return [], False

@@ -351,16 +351,52 @@ if st.session_state.qa_history:
                         status.write("Decomposing complex query...")
                         sub_queries = decompose_query(search_q, llm)
                         
+                        group_context_docs = None
+                        if selected_resume == "All Contracts":
+                            status.write("Detecting document/group context...")
+                            from src.retriever import get_group_context, get_question_context
+                            group_docs, group_confident = get_group_context(sub_queries, st.session_state.vector_store)
+                            if group_confident:
+                                group_context_docs = group_docs
+                                status.write(f"🌐 Group Context Detected: {', '.join(group_context_docs)}")
+                            else:
+                                status.write("🌐 No strong group context detected.")
+                        
                         all_final_answers = []
                         unique_sources = []
                         seen_files = set()
+                        
+                        last_confident_doc = None
                         
                         for idx, sub_q in enumerate(sub_queries):
                             status.update(label=f"Analyzing... (Processing question {idx+1}/{len(sub_queries)})")
                             status.write(f"🔍 Executing sub-query: {sub_q}")
                             
                             if selected_resume == "All Contracts":
-                                indexed_docs = get_indexed_documents(st.session_state.vector_store)
+                                # 1. Explicit document found? (Cross-Encoder chunk density check)
+                                status.write("🔍 Analyzing explicit intent...")
+                                q_docs, q_confident = get_question_context(sub_q, st.session_state.vector_store)
+                                
+                                if q_confident and q_docs:
+                                    indexed_docs = q_docs
+                                    last_confident_doc = q_docs[0]
+                                    status.write(f"📌 Explicit document found: {q_docs[0]}")
+                                # 2. Local context? (Inherited from previous question)
+                                elif last_confident_doc:
+                                    indexed_docs = [last_confident_doc]
+                                    status.write(f"📌 Inherited previous context: {last_confident_doc}")
+                                # 3. Safe batch context? (Inherited from group)
+                                elif group_context_docs:
+                                    indexed_docs = group_context_docs
+                                    last_confident_doc = group_context_docs[0]
+                                    status.write(f"📌 Inherited group context: {group_context_docs[0]}")
+                                # 4. Ambiguous
+                                else:
+                                    # Ambiguous -> Don't guess
+                                    indexed_docs = []
+                                    status.write("📌 Ambiguous query: Cannot determine target contract.")
+                                    all_final_answers.append(f"### {sub_q}\n\nI'm sorry, this question is too ambiguous. Please specify which contract you are asking about (e.g., 'For the Acme Corp agreement, {sub_q}').")
+                                
                                 doc_answers = []
                                 for doc in indexed_docs:
                                     doc_filter = {"source_file": doc}

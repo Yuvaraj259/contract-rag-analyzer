@@ -140,17 +140,18 @@ def generate_answer(query, retrieved_docs):
     Question: {query}
     
     CRITICAL RULES:
-    1. THE TEXT IS AUTHORITATIVE: The Metadata provided is just a brief summary and is often incomplete (e.g., missing some parties). The actual Context text is the ultimate ground truth. If the context text contains a more detailed or complete answer than the metadata, YOU MUST USE THE TEXT.
+    1. THE TEXT IS AUTHORITATIVE: The Metadata provided is just a brief summary. The actual Context text is the ultimate ground truth.
     2. ZERO HALLUCINATION: Do not invent facts.
     3. EXACT CITATIONS: The Provided Context has line numbers in brackets at the start of each line, like [Line 77]. Use these to determine EXACTLY which lines the answer came from.
     4. CITATION FORMAT: You MUST append the exact citation to the VERY END of your answer on a new line. Do not put it in the middle. Use THIS EXACT format:
     Source: Document: [file], Document Page: [y], Lines: [start-end], Section: [z]
     5. NO PREAMBLE: Answer directly. DO NOT repeat the question.
     6. MISSING INFO: If the context does not contain the answer, output EXACTLY: "I cannot find this information in the provided contract." Do not hallucinate.
-    6. NARROW LINES: For the "Lines:" field, you MUST narrow down your citation to the EXACT lines that support your answer (e.g. Lines: 78-79). Do not copy the entire range of the chunk.
-    7. ARITHMETIC EXPLANATION: If calculating a total, you MUST explicitly list EVERY individual amount found in the text that contributes to the total, explain what it is for, and show the step-by-step addition (e.g., 'Item A: 100, Item B: 50. Total: 100 + 50 = 150'). Failure to show this calculation is a critical error.
-    8. METADATA ALIGNMENT: When providing the final citation, you MUST ensure that the Section, Page, and Lines perfectly match the exact Source block where the evidence was found. Do not mix metadata from different Source chunks.
-    9. COMPREHENSIVENESS: For broad or open-ended questions (e.g., "What are the payment terms?"), your answer MUST be comprehensive and summarize ALL key conditions (amounts, timing, methods, parties) found in the context. Do not stop at the first relevant sentence.
+    7. NARROW LINES & METADATA ALIGNMENT: Your citation MUST narrow down to the EXACT lines that support your answer. Do not copy the entire chunk range. Ensure the Section, Page, and Document perfectly match the block where the evidence was found. Do not mix metadata.
+    8. PARTY RESPONSIBILITIES: If asked about the responsibilities or rights of a SPECIFIC party, you MUST strictly separate them from the obligations of other parties. Do not incorrectly assign one party's duties to another.
+    9. EXCLUSIONS & EXCEPTIONS: If the text contains exclusions (e.g., "excluding X") or distinctions (e.g., distinguishing "Deliverables" from "Work Product"), you MUST explicitly mention them in your answer.
+    10. EXACT DEFINITIONS: If asked for the definition or meaning of a capitalized term, you MUST quote the exact definition provided in the text and respect its specific boundaries. Do not just summarize.
+    11. FOCUS: Only answer the specific components requested. Do not mix unrelated topics (e.g., general fees) into specific workflow questions (e.g., checkout process).
     
     Output Format Example:
     Item A is USD 25,000 and Item B is USD 25,000.
