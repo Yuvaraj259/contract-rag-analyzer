@@ -373,9 +373,10 @@ if st.session_state.qa_history:
                             status.write(f"🔍 Executing sub-query: {sub_q}")
                             
                             if selected_resume == "All Contracts":
-                                # 1. Explicit document found? (Cross-Encoder chunk density check)
-                                status.write("🔍 Analyzing explicit intent...")
-                                q_docs, q_confident = get_question_context(sub_q, st.session_state.vector_store)
+                                # 1. Explicit document named in query? (BM25 Title/Party check)
+                                status.write("🔍 Checking for explicitly named contracts...")
+                                from src.retriever import check_explicit_intent
+                                q_docs, q_confident = check_explicit_intent(sub_q, st.session_state.vector_store)
                                 
                                 if q_confident and q_docs:
                                     indexed_docs = q_docs
@@ -390,25 +391,36 @@ if st.session_state.qa_history:
                                     indexed_docs = group_context_docs
                                     last_confident_doc = group_context_docs[0]
                                     status.write(f"📌 Inherited group context: {group_context_docs[0]}")
-                                # 4. Ambiguous
+                                # 4. Global Search
                                 else:
-                                    # Ambiguous -> Don't guess
-                                    indexed_docs = []
-                                    status.write("📌 Ambiguous query: Cannot determine target contract.")
-                                    all_final_answers.append(f"### {sub_q}\n\nI'm sorry, this question is too ambiguous. Please specify which contract you are asking about (e.g., 'For the Acme Corp agreement, {sub_q}').")
+                                    indexed_docs = [] # Use as flag for global search
+                                    status.write("🌐 Broad query: Searching across all contracts...")
                                 
                                 doc_answers = []
-                                for doc in indexed_docs:
-                                    doc_filter = {"source_file": doc}
-                                    retrieved = retrieve_context(sub_q, st.session_state.vector_store, k=5, filter_dict=doc_filter)
+                                if indexed_docs:
+                                    for doc in indexed_docs:
+                                        doc_filter = {"source_file": doc}
+                                        retrieved = retrieve_context(sub_q, st.session_state.vector_store, k=5, filter_dict=doc_filter)
+                                        if retrieved:
+                                            ans = generate_answer(sub_q, retrieved)
+                                            doc_answers.append(f"**{doc}**\n{ans}")
+                                            sources = [{"file": r.metadata.get("source_file", "Unknown")} for r in retrieved if r.metadata.get("source_file")]
+                                            for s in sources:
+                                                if s["file"] not in seen_files:
+                                                    seen_files.add(s["file"])
+                                                    unique_sources.append(s)
+                                else:
+                                    # Global Search across all contracts
+                                    retrieved = retrieve_context(sub_q, st.session_state.vector_store, k=10, filter_dict=None)
                                     if retrieved:
                                         ans = generate_answer(sub_q, retrieved)
-                                        doc_answers.append(f"**{doc}**\n{ans}")
+                                        doc_answers.append(ans)
                                         sources = [{"file": r.metadata.get("source_file", "Unknown")} for r in retrieved if r.metadata.get("source_file")]
                                         for s in sources:
                                             if s["file"] not in seen_files:
                                                 seen_files.add(s["file"])
                                                 unique_sources.append(s)
+                                                
                                 if doc_answers:
                                     all_final_answers.append(f"### {sub_q}\n\n" + "\n\n".join(doc_answers))
                             else:

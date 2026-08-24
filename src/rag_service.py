@@ -143,26 +143,32 @@ def generate_answer(query, retrieved_docs):
     1. THE TEXT IS AUTHORITATIVE: The Metadata provided is just a brief summary. The actual Context text is the ultimate ground truth.
     2. ZERO HALLUCINATION: Do not invent facts.
     3. EXACT CITATIONS: The Provided Context has line numbers in brackets at the start of each line, like [Line 77]. Use these to determine EXACTLY which lines the answer came from.
-    4. CITATION FORMAT: You MUST append the exact citation to the VERY END of your answer on a new line. Do not put it in the middle. Use THIS EXACT format:
+    4. CITATION FORMAT: If the context contains the answer, you MUST append the exact citation to the VERY END of your answer on a new line. Do not put it in the middle. Use THIS EXACT format:
     Source: Document: [file], Document Page: [y], Lines: [start-end], Section: [z]
     5. NO PREAMBLE: Answer directly. DO NOT repeat the question.
-    6. MISSING INFO: If the context does not contain the answer, output EXACTLY: "I cannot find this information in the provided contract." Do not hallucinate.
+    6. MISSING INFO: If the context does not contain the answer, output EXACTLY AND ONLY: "I cannot find this information in the provided contract." Do not hallucinate, and do NOT append a Source citation.
     7. NARROW LINES & METADATA ALIGNMENT: Your citation MUST narrow down to the EXACT lines that support your answer. Do not copy the entire chunk range. Ensure the Section, Page, and Document perfectly match the block where the evidence was found. Do not mix metadata.
     8. PARTY RESPONSIBILITIES: If asked about the responsibilities or rights of a SPECIFIC party, you MUST strictly separate them from the obligations of other parties. Do not incorrectly assign one party's duties to another.
     9. EXCLUSIONS & EXCEPTIONS: If the text contains exclusions (e.g., "excluding X") or distinctions (e.g., distinguishing "Deliverables" from "Work Product"), you MUST explicitly mention them in your answer.
     10. EXACT DEFINITIONS: If asked for the definition or meaning of a capitalized term, you MUST quote the exact definition provided in the text and respect its specific boundaries. Do not just summarize.
     11. FOCUS: Only answer the specific components requested. Do not mix unrelated topics (e.g., general fees) into specific workflow questions (e.g., checkout process).
     
-    Output Format Example:
+    Output Format Example 1 (Answer Found):
     Item A is USD 25,000 and Item B is USD 25,000.
     Total: 25,000 + 25,000 = USD 50,000.
     The total cost of the project is USD 50,000.
     
     Source: Document: [Actual Filename], Document Page: 2, Lines: 45-46, Section: FEES
+
+    Output Format Example 2 (Answer Not Found):
+    I cannot find this information in the provided contract.
     
     Answer:"""
     
     try:
+        with open("data/debug_prompt.txt", "w", encoding="utf-8") as f:
+            f.write(prompt)
+            
         response = llm.invoke(prompt).strip()
         validated_response = validate_answer(query, response, retrieved_docs, metadata_summary)
         return validated_response
