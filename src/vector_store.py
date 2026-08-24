@@ -14,6 +14,33 @@ def build_vector_store(chunks, embeddings_model):
     """Builds a new Elasticsearch vector store from chunks."""
     docs = [Document(page_content=c["text"], metadata=c["metadata"]) for c in chunks]
     
+    es_client = get_es_client()
+    if not es_client.indices.exists(index=INDEX_NAME):
+        # Force all string metadata fields to be mapped as text with a keyword sub-field
+        # This prevents Elasticsearch from automatically coercing numeric strings (e.g. "1") into long
+        mapping = {
+            "mappings": {
+                "dynamic_templates": [
+                    {
+                        "strings_as_text": {
+                            "match_mapping_type": "string",
+                            "mapping": {
+                                "type": "text",
+                                "fields": {
+                                    "keyword": {
+                                        "type": "keyword",
+                                        "ignore_above": 256
+                                    }
+                                }
+                            }
+                        }
+                    }
+                ],
+                "numeric_detection": False
+            }
+        }
+        es_client.indices.create(index=INDEX_NAME, body=mapping)
+        
     # Enable Hybrid Search (BM25 Keyword + Dense Vector)
     # RRF (Reciprocal Rank Fusion) combines the lexical and semantic scores
     vector_store = ElasticsearchStore.from_documents(

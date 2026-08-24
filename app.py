@@ -364,7 +364,7 @@ if st.session_state.qa_history:
                                 doc_answers = []
                                 for doc in indexed_docs:
                                     doc_filter = {"source_file": doc}
-                                    retrieved = retrieve_context(sub_q, st.session_state.vector_store, k=10, filter_dict=doc_filter)
+                                    retrieved = retrieve_context(sub_q, st.session_state.vector_store, k=5, filter_dict=doc_filter)
                                     if retrieved:
                                         ans = generate_answer(sub_q, retrieved)
                                         doc_answers.append(f"**{doc}**\n{ans}")
@@ -377,7 +377,7 @@ if st.session_state.qa_history:
                                     all_final_answers.append(f"### {sub_q}\n\n" + "\n\n".join(doc_answers))
                             else:
                                 filter_dict = {"source_file": selected_resume}
-                                retrieved_docs = retrieve_context(sub_q, st.session_state.vector_store, k=8, filter_dict=filter_dict)
+                                retrieved_docs = retrieve_context(sub_q, st.session_state.vector_store, k=5, filter_dict=filter_dict)
                                 ans = generate_answer(sub_q, retrieved_docs)
                                 all_final_answers.append(f"**{sub_q}**\n\n{ans}")
                                 

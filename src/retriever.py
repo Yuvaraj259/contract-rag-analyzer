@@ -1,6 +1,74 @@
 import re
 import streamlit as st
 
+def fetch_neighbors(docs, vector_store):
+    if not docs:
+        return []
+    
+    try:
+        es_client = vector_store.client
+        from src.vector_store import INDEX_NAME
+        from langchain_core.documents import Document
+        
+        expanded_docs = []
+        seen_ids = set()
+        search_queries = []
+        
+        for doc in docs:
+            source_file = doc.metadata.get("source_file")
+            chunk_index = doc.metadata.get("chunk_index")
+            
+            if source_file and chunk_index is not None:
+                chunk_id_curr = f"{source_file}_{chunk_index}"
+                if chunk_id_curr not in seen_ids:
+                    expanded_docs.append(doc)
+                    seen_ids.add(chunk_id_curr)
+                
+                for offset in [-1, 1]:
+                    neighbor_idx = chunk_index + offset
+                    if neighbor_idx >= 0:
+                        neighbor_id = f"{source_file}_{neighbor_idx}"
+                        if neighbor_id not in seen_ids:
+                            seen_ids.add(neighbor_id)
+                            search_queries.append({
+                                "bool": {
+                                    "must": [
+                                        {"term": {"metadata.source_file.keyword": source_file}},
+                                        {"term": {"metadata.chunk_index": neighbor_idx}}
+                                    ]
+                                }
+                            })
+            else:
+                expanded_docs.append(doc)
+                
+        if search_queries:
+            body = {
+                "query": {
+                    "bool": {
+                        "should": search_queries
+                    }
+                },
+                "size": len(search_queries)
+            }
+            res = es_client.search(index=INDEX_NAME, body=body)
+            for hit in res.get("hits", {}).get("hits", []):
+                expanded_docs.append(Document(
+                    page_content=hit["_source"].get("text", ""),
+                    metadata=hit["_source"].get("metadata", {})
+                ))
+                
+        # Sort so that contiguous chunks appear in order
+        def sort_key(d):
+            return (d.metadata.get("source_file", ""), d.metadata.get("chunk_index", 0))
+            
+        expanded_docs.sort(key=sort_key)
+        return expanded_docs
+        
+    except Exception as e:
+        print(f"Failed to fetch neighbors: {e}")
+        return docs
+
+
 @st.cache_resource
 def get_reranker():
     from sentence_transformers import CrossEncoder
@@ -13,9 +81,32 @@ def rerank_docs(query, docs, top_n=5):
         reranker = get_reranker()
         pairs = [[query, doc.page_content] for doc in docs]
         scores = reranker.predict(pairs)
-        doc_scores = list(zip(docs, scores))
-        doc_scores.sort(key=lambda x: x[1], reverse=True)
-        return [doc for doc, score in doc_scores[:top_n]]
+        
+        q_lower = query.lower()
+        boosted_scores = []
+        for doc, base_score in zip(docs, scores):
+            score = base_score
+            sec = doc.metadata.get("section", "").lower()
+            if sec:
+                # Exact match
+                if sec in q_lower:
+                    score += 5.0
+                # Semantic match fallbacks
+                elif "scope" in q_lower and "scope" in sec:
+                    score += 5.0
+                elif ("price" in q_lower or "quotation" in q_lower or "cost" in q_lower or "amount" in q_lower) and ("fee" in sec or "payment" in sec or "commercial" in sec or "pricing" in sec):
+                    score += 5.0
+                elif ("parties" in q_lower or "between" in q_lower) and ("intro" in sec or "parties" in sec or "between" in sec):
+                    score += 5.0
+                elif ("duration" in q_lower or "term" in q_lower) and ("term" in sec or "period" in sec):
+                    score += 5.0
+                elif ("delivery" in q_lower or "milestone" in q_lower) and ("milestone" in sec or "delivery" in sec):
+                    score += 5.0
+                    
+            boosted_scores.append((doc, score))
+            
+        boosted_scores.sort(key=lambda x: x[1], reverse=True)
+        return [doc for doc, score in boosted_scores[:top_n]]
     except Exception as e:
         print(f"Reranking failed: {e}")
         return docs[:top_n]
@@ -60,6 +151,8 @@ def retrieve_context(query, vector_store, k=5, filter_dict=None, enable_rerankin
             section_boosts.append({"match": {"metadata.section": {"query": "SCOPE OF WORK", "boost": 3}}})
         if "duration" in q_lower or "period" in q_lower or "term" in q_lower:
             section_boosts.append({"match": {"metadata.section": {"query": "TERM", "boost": 3}}})
+            section_boosts.append({"match": {"metadata.section": {"query": "TERM OF AGREEMENT", "boost": 3}}})
+            section_boosts.append({"match": {"metadata.section": {"query": "TERM AND TERMINATION", "boost": 3}}})
         if "quotation" in q_lower or "price" in q_lower or "cost" in q_lower or "amount" in q_lower or "payable" in q_lower:
             section_boosts.append({"match": {"metadata.section": {"query": "PAYMENT TERMS", "boost": 3}}})
             section_boosts.append({"match": {"metadata.section": {"query": "PAYMENT", "boost": 3}}})
@@ -123,8 +216,8 @@ def retrieve_context(query, vector_store, k=5, filter_dict=None, enable_rerankin
     if enable_reranking:
         # Rerank the combined results
         reranked_docs = rerank_docs(query, all_docs, top_n=k)
-        return reranked_docs
+        return fetch_neighbors(reranked_docs, vector_store)
     else:
-        return all_docs[:k]
+        return fetch_neighbors(all_docs[:k], vector_store)
 
 

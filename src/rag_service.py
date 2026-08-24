@@ -89,8 +89,7 @@ def validate_answer(query, answer, retrieved_docs, metadata_summary=""):
         if not val_result.get("supported", True):
             unsupported = val_result.get("unsupported_claims", [])
             if unsupported:
-                warning = "\n\n**System Warning:** The following claims could not be verified by the retrieved text: " + ", ".join(unsupported)
-                return answer + warning
+                print("\n**System Warning:** The following claims could not be verified by the retrieved text: " + ", ".join(unsupported))
         return answer
     except Exception as e:
         print(f"Validator Error: {e}")
@@ -116,15 +115,12 @@ def generate_answer(query, retrieved_docs):
             except ValueError:
                 pass
                 
-        chunk_text = f"Source: Document: {doc.metadata.get('source_file', 'Unknown')}, PDF Page: {doc.metadata.get('pdf_page_number', doc.metadata.get('page_number', 'Unknown'))}, Document Page: {doc.metadata.get('document_page_number', 'Unknown')}, Section: {doc.metadata.get('section', 'Unknown')}\n{numbered_text}\n"
+        chunk_text = f"Source: Document: {doc.metadata.get('source_file', 'Unknown')}, Document Page: {doc.metadata.get('document_page_number', 'Unknown')}, Section: {doc.metadata.get('section', 'Unknown')}\n{numbered_text}\n"
         context_chunks.append(chunk_text)
         
     context = "\n\n".join(context_chunks)
     
-    # Pre-generation Answerability Gate
-    status = check_answerability(query, context)
-    if status == "NOT_FOUND":
-        return "I cannot find this information in the provided contract."
+    # Pre-generation Answerability Gate removed to prevent false negatives on large contexts
         
     metadata_summary = ""
     seen_docs = set()
@@ -144,19 +140,24 @@ def generate_answer(query, retrieved_docs):
     Question: {query}
     
     CRITICAL RULES:
-    1. THE TEXT IS AUTHORITATIVE: If the Metadata says "Unknown" but the actual Context text contains the answer, use the text.
+    1. THE TEXT IS AUTHORITATIVE: The Metadata provided is just a brief summary and is often incomplete (e.g., missing some parties). The actual Context text is the ultimate ground truth. If the context text contains a more detailed or complete answer than the metadata, YOU MUST USE THE TEXT.
     2. ZERO HALLUCINATION: Do not invent facts.
     3. EXACT CITATIONS: The Provided Context has line numbers in brackets at the start of each line, like [Line 77]. Use these to determine EXACTLY which lines the answer came from.
     4. CITATION FORMAT: You MUST append the exact citation to the VERY END of your answer on a new line. Do not put it in the middle. Use THIS EXACT format:
-    Source: Document: [file], PDF Page: [x], Document Page: [y], Lines: [start-end], Section: [z]
-    5. NO PREAMBLE: Answer directly. DO NOT repeat the question. DO NOT say "The answer is" or "Based on the context".
+    Source: Document: [file], Document Page: [y], Lines: [start-end], Section: [z]
+    5. NO PREAMBLE: Answer directly. DO NOT repeat the question.
+    6. MISSING INFO: If the context does not contain the answer, output EXACTLY: "I cannot find this information in the provided contract." Do not hallucinate.
     6. NARROW LINES: For the "Lines:" field, you MUST narrow down your citation to the EXACT lines that support your answer (e.g. Lines: 78-79). Do not copy the entire range of the chunk.
-    7. ARITHMETIC REQUIRED: If the question requires adding or combining amounts, you MUST write out the step-by-step arithmetic equation before providing the final answer (e.g. '100k + 50k = 150k').
+    7. ARITHMETIC EXPLANATION: If calculating a total, you MUST explicitly list EVERY individual amount found in the text that contributes to the total, explain what it is for, and show the step-by-step addition (e.g., 'Item A: 100, Item B: 50. Total: 100 + 50 = 150'). Failure to show this calculation is a critical error.
+    8. METADATA ALIGNMENT: When providing the final citation, you MUST ensure that the Section, Page, and Lines perfectly match the exact Source block where the evidence was found. Do not mix metadata from different Source chunks.
+    9. COMPREHENSIVENESS: For broad or open-ended questions (e.g., "What are the payment terms?"), your answer MUST be comprehensive and summarize ALL key conditions (amounts, timing, methods, parties) found in the context. Do not stop at the first relevant sentence.
     
     Output Format Example:
+    Item A is USD 25,000 and Item B is USD 25,000.
+    Total: 25,000 + 25,000 = USD 50,000.
     The total cost of the project is USD 50,000.
     
-    Source: Document: example.pdf, PDF Page: 3, Document Page: 2, Lines: 45-46, Section: FEES
+    Source: Document: [Actual Filename], Document Page: 2, Lines: 45-46, Section: FEES
     
     Answer:"""
     

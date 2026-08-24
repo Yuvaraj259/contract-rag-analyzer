@@ -71,8 +71,8 @@ def extract_parties(text):
     ignore_list = ["the", "company", "client", "vendor", "customer", "contractor", "licensor", "licensee", "party", "parties", "agreement"]
     clean_parties = [p for p in parties if len(p) > 2 and p.lower() not in ignore_list]
     
-    # Return up to the top 2 parties
-    return clean_parties[:2]
+    # Return up to the top 5 parties
+    return clean_parties[:5]
 
 def extract_contract_type(text, title):
     """Categorizes the structure/type of the contract."""
