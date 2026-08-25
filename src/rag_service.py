@@ -152,6 +152,7 @@ def generate_answer(query, retrieved_docs):
     9. TIMELINE & MILESTONE ACCURACY: Never invent, guess, or shift milestone weeks, dates, or payment terms. Only output the exact timing and amounts literally written in the text. Do not infer "Weeks 7-13" if the text does not explicitly group them that way.
     10. EXACT DEFINITIONS & EXCLUSIONS: If the text contains exclusions (e.g., "excluding X") or distinctions (e.g., distinguishing "Deliverables" from "Work Product"), you MUST explicitly mention them in your answer.
     11. FOCUS: Only answer the specific components requested. Do not mix unrelated topics.
+    12. ARITHMETIC EXCEPTION: You are explicitly allowed to perform basic mathematical calculations (like addition) if the user asks for a 'total' or 'combined amount' and the individual numbers are explicitly listed in the text.
     
     Output Format Example 1 (Answer Found):
     Item A is USD 25,000 and Item B is USD 25,000.
@@ -192,6 +193,7 @@ def contextualize_query(query: str, history: list) -> str:
     prompt = f"""
     You are an expert at resolving coreferences in conversational search about legal contracts.
     Given a chat history and the latest user query, rewrite the user query to be a standalone query.
+    CRITICAL INSTRUCTION: You MUST explicitly include the specific company names (e.g. VAL, Qualigen, ExxonMobil) and the specific Document Name/Type from the chat history into the standalone query! 
     For example, if the history is about "the Microsoft NDA", and the user asks "What is the termination period?", the standalone query should be "What is the termination period for the Microsoft NDA?".
     Do NOT answer the query. Return ONLY the rewritten standalone query.
     
