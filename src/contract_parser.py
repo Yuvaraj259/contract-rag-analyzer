@@ -91,9 +91,42 @@ def extract_contract_type(text, title):
 
 def extract_metadata(text, filename):
     """
-    Main entry point for extracting contract-level metadata.
-    This replaces the resume-centric extraction logic.
+    Main entry point for extracting contract-level metadata using an LLM.
     """
+    try:
+        from src.rag_service import get_llm
+        import json
+        llm = get_llm()
+        if llm:
+            prompt = f"""You are an expert legal assistant. Extract the metadata from the following contract text.
+            If a field cannot be determined, return "Unknown".
+            Return ONLY a valid JSON object matching this schema exactly:
+            {{
+                "contract_title": "The exact formal title of the agreement",
+                "parties": ["Party 1", "Party 2"],
+                "effective_date": "The effective date of the agreement"
+            }}
+            
+            Contract Text (First 3000 characters):
+            {text[:3000]}
+            """
+            
+            response = llm.invoke(prompt).strip()
+            start_idx = response.find('{')
+            end_idx = response.rfind('}') + 1
+            if start_idx != -1 and end_idx != -1:
+                meta = json.loads(response[start_idx:end_idx])
+                return {
+                    "contract_title": meta.get("contract_title", "Unknown"),
+                    "contract_type": extract_contract_type(text, meta.get("contract_title", "")),
+                    "effective_date": meta.get("effective_date", "Unknown"),
+                    "parties": meta.get("parties", []),
+                    "source_file": filename
+                }
+    except Exception as e:
+        print(f"LLM Metadata Extraction Failed for {filename}: {e}")
+        
+    # Fallback to simple extraction
     title = extract_contract_title(text, filename)
     return {
         "contract_title": title,

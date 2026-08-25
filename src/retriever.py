@@ -88,22 +88,33 @@ def rerank_docs(query, docs, top_n=5):
             score = base_score
             sec = doc.metadata.get("section", "").lower()
             if sec:
-                # Exact match
                 if sec in q_lower:
-                    score += 5.0
+                    score += 50.0
                 # Semantic match fallbacks
                 elif "scope" in q_lower and "scope" in sec:
-                    score += 5.0
+                    score += 50.0
                 elif ("price" in q_lower or "quotation" in q_lower or "cost" in q_lower or "amount" in q_lower) and ("fee" in sec or "payment" in sec or "commercial" in sec or "pricing" in sec):
-                    score += 5.0
+                    score += 50.0
                 elif ("parties" in q_lower or "between" in q_lower) and ("intro" in sec or "parties" in sec or "between" in sec):
-                    score += 5.0
+                    score += 50.0
                 elif ("duration" in q_lower or "term" in q_lower) and ("term" in sec or "period" in sec):
-                    score += 5.0
+                    score += 50.0
                 elif ("delivery" in q_lower or "milestone" in q_lower) and ("milestone" in sec or "delivery" in sec):
-                    score += 5.0
+                    score += 50.0
                 elif ("mean" in q_lower or "define" in q_lower or "definition" in q_lower) and ("article 1" in sec or "definition" in sec):
-                    score += 5.0
+                    score += 50.0
+                elif ("confidential" in q_lower or "non-disclosure" in q_lower or "nda" in q_lower) and ("confidential" in sec or "non-disclosure" in sec):
+                    score += 50.0
+                elif ("intellectual property" in q_lower or "ip" in q_lower or "ownership" in q_lower or "rights" in q_lower) and ("intellectual property" in sec or "ownership" in sec or "rights" in sec):
+                    score += 50.0
+                elif ("warrant" in q_lower or "guarantee" in q_lower or "representation" in q_lower) and ("warrant" in sec or "representation" in sec or "guarantee" in sec):
+                    score += 50.0
+                elif ("manufacture" in q_lower or "manufacturing" in q_lower) and ("manufacture" in sec or "production" in sec):
+                    score += 50.0
+                elif ("market" in q_lower or "promot" in q_lower or "sale" in q_lower or "commercialize" in q_lower or "distribut" in q_lower) and ("commercialize" in sec or "market" in sec or "sale" in sec or "promot" in sec or "distribut" in sec):
+                    score += 50.0
+                elif ("change of control" in q_lower or "assign" in q_lower) and ("assign" in sec or "control" in sec or "miscellaneous" in sec):
+                    score += 50.0
                     
             boosted_scores.append((doc, score))
             
@@ -126,6 +137,8 @@ def retrieve_context(query, vector_store, k=5, filter_dict=None, enable_rerankin
     all_docs = []
     seen_content = set()
     
+    fetch_k = k * 4 if enable_reranking else k
+    
     # 1. Vector Search (Filter pushed to database!)
     es_filter = []
     if filter_dict:
@@ -135,7 +148,12 @@ def retrieve_context(query, vector_store, k=5, filter_dict=None, enable_rerankin
             else:
                 es_filter.append({"term": {f"metadata.{key}.keyword": val}})
                 
-    docs_vector = vector_store.similarity_search(query, k=k, filter=es_filter if es_filter else None)
+    docs_vector = vector_store.similarity_search(
+        query, 
+        k=fetch_k, 
+        fetch_k=fetch_k * 3, # Ensure num_candidates is strictly greater than k
+        filter=es_filter if es_filter else None
+    )
     
     # 2. BM25 Keyword Search (Manual)
     docs_keyword = []
@@ -170,6 +188,25 @@ def retrieve_context(query, vector_store, k=5, filter_dict=None, enable_rerankin
         if "mean" in q_lower or "define" in q_lower or "definition" in q_lower:
             section_boosts.append({"match": {"metadata.section": {"query": "ARTICLE 1", "boost": 3}}})
             section_boosts.append({"match": {"metadata.section": {"query": "DEFINITIONS", "boost": 3}}})
+        if "confidential" in q_lower or "non-disclosure" in q_lower or "nda" in q_lower:
+            section_boosts.append({"match": {"metadata.section": {"query": "CONFIDENTIALITY", "boost": 4}}})
+            section_boosts.append({"match": {"metadata.section": {"query": "CONFIDENTIAL INFORMATION", "boost": 4}}})
+            section_boosts.append({"match": {"metadata.section": {"query": "NON-DISCLOSURE", "boost": 4}}})
+        if "intellectual property" in q_lower or "ip" in q_lower or "ownership" in q_lower or "rights" in q_lower:
+            section_boosts.append({"match": {"metadata.section": {"query": "INTELLECTUAL PROPERTY", "boost": 3}}})
+            section_boosts.append({"match": {"metadata.section": {"query": "OWNERSHIP", "boost": 3}}})
+        if "warrant" in q_lower or "guarantee" in q_lower or "representation" in q_lower:
+            section_boosts.append({"match": {"metadata.section": {"query": "REPRESENTATIONS", "boost": 3}}})
+            section_boosts.append({"match": {"metadata.section": {"query": "WARRANTIES", "boost": 3}}})
+        if "manufacture" in q_lower or "manufacturing" in q_lower:
+            section_boosts.append({"match": {"metadata.section": {"query": "MANUFACTURING", "boost": 3}}})
+        if "market" in q_lower or "promot" in q_lower or "sale" in q_lower or "commercialize" in q_lower or "distribut" in q_lower:
+            section_boosts.append({"match": {"metadata.section": {"query": "COMMERCIALIZATION", "boost": 3}}})
+            section_boosts.append({"match": {"metadata.section": {"query": "MARKETING", "boost": 3}}})
+            section_boosts.append({"match": {"metadata.section": {"query": "DISTRIBUTION", "boost": 3}}})
+        if "change of control" in q_lower or "assign" in q_lower:
+            section_boosts.append({"match": {"metadata.section": {"query": "ASSIGNMENT", "boost": 3}}})
+            section_boosts.append({"match": {"metadata.section": {"query": "MISCELLANEOUS", "boost": 2}}})
             
         import re
         quoted_terms = re.findall(r'"([^"]*)"', query) + re.findall(r"'([^']*)'", query)
@@ -200,12 +237,12 @@ def retrieve_context(query, vector_store, k=5, filter_dict=None, enable_rerankin
                         "filter": [{"terms" if isinstance(v, list) else "term": {f"metadata.{k}.keyword": v}} for k, v in filter_dict.items()]
                     }
                 },
-                "size": k
+                "size": fetch_k
             }
         else:
             body = {
                 "query": bm25_query,
-                "size": k * 2
+                "size": fetch_k
             }
             
         res = es_client.search(index=INDEX_NAME, body=body)
@@ -227,9 +264,9 @@ def retrieve_context(query, vector_store, k=5, filter_dict=None, enable_rerankin
     if enable_reranking:
         # Rerank the combined results
         reranked_docs = rerank_docs(query, all_docs, top_n=k)
-        return fetch_neighbors(reranked_docs, vector_store)
+        return reranked_docs
     else:
-        return fetch_neighbors(all_docs[:k], vector_store)
+        return all_docs[:k]
 
 
 def get_group_context(queries, vector_store, top_k=1):
@@ -306,36 +343,12 @@ def check_explicit_intent(query, vector_store):
         llm = get_llm()
         
         # Extract the core entities to remove noise words like 'What does mean'
-        search_terms = extract_search_terms(query, llm)
+        search_terms = extract_search_terms(query)
         clean_query = " ".join(search_terms).replace("-", " ").replace("–", " ").replace("—", " ")
         
         q_lower = query.lower()
         
-        # Fast explicit check for known parties
-        if "phasebio" in q_lower or "sfj" in q_lower:
-            return ["5.pdf"], True
-        if "abbvie" in q_lower or "harpoon" in q_lower:
-            return ["11.pdf"], True
-        if "fuelcell" in q_lower:
-            return ["12.pdf"], True
-        if "liquidmetal" in q_lower or "eutectix" in q_lower:
-            return ["8.pdf"], True
-        if "eurofarma" in q_lower or "nls" in q_lower:
-            return ["7.pdf"], True
-        if "eton" in q_lower or "aucta" in q_lower:
-            return ["14.pdf"], True
-        if "legacy education" in q_lower:
-            return ["9.pdf"], True
-        if "dot com" in q_lower:
-            return ["6.pdf"], True
-        if "cc-pharming" in q_lower or "ibio" in q_lower:
-            return ["10.pdf"], True
-        if "full sail" in q_lower or "reed" in q_lower:
-            return ["3.pdf"], True
-        if "vgrab" in q_lower:
-            return ["2.pdf"], True
-        if "emerald health" in q_lower:
-            return ["13.pdf"], True
+        # Fast explicit check for known parties removed. We now rely on dynamic Elasticsearch metadata matching!
             
         es_client = vector_store.client
         from src.vector_store import INDEX_NAME
@@ -343,13 +356,16 @@ def check_explicit_intent(query, vector_store):
         body = {
             "query": {
                 "multi_match": {
-                    "query": clean_query,
+                    "query": query,
                     "fields": ["metadata.contract_title^5", "metadata.source_file^5", "metadata.parties^5"],
                     "type": "cross_fields",
                     "operator": "or"
                 }
             },
-            "size": 3
+            "size": 100,
+            "collapse": {
+                "field": "metadata.source_file.keyword"
+            }
         }
         res = es_client.search(index=INDEX_NAME, body=body)
         hits = res.get("hits", {}).get("hits", [])
@@ -360,17 +376,19 @@ def check_explicit_intent(query, vector_store):
         top_hit = hits[0]
         score = top_hit.get("_score", 0)
         
-        if score < 5.0:
-            return [], False
+        top_docs = []
+        if score >= 5.0:
+            threshold = max(5.0, score * 0.7)
+            source = top_hit.get("_source", {}).get("metadata", {}).get("source_file")
+            if source:
+                top_docs.append(source)
+            for hit in hits[1:]:
+                hit_score = hit.get("_score", 0)
+                hit_source = hit.get("_source", {}).get("metadata", {}).get("source_file")
+                if hit_score >= threshold and hit_source and hit_source not in top_docs:
+                    top_docs.append(hit_source)
+            return top_docs, True
             
-        if len(hits) > 1:
-            runner_up_score = hits[1].get("_score", 0)
-            if score < runner_up_score + 3.0:
-                return [], False
-                
-        source = top_hit["_source"].get("metadata", {}).get("source_file")
-        if source:
-            return [source], True
     except Exception as e:
         print(f"Explicit intent check failed: {e}")
         

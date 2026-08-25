@@ -12,7 +12,7 @@ def get_llm():
         model=model_name,
         base_url=ollama_url,
         temperature=0.1,
-        num_ctx=4096
+        num_ctx=8192
     )
 
 def check_answerability(query, context):
@@ -141,17 +141,17 @@ def generate_answer(query, retrieved_docs):
     
     CRITICAL RULES:
     1. THE TEXT IS AUTHORITATIVE: The Metadata provided is just a brief summary. The actual Context text is the ultimate ground truth.
-    2. ZERO HALLUCINATION: Do not invent facts.
+    2. ZERO HALLUCINATION: Do not invent facts, names, dates, amounts, or clauses.
     3. EXACT CITATIONS: The Provided Context has line numbers in brackets at the start of each line, like [Line 77]. Use these to determine EXACTLY which lines the answer came from.
     4. CITATION FORMAT: If the context contains the answer, you MUST append the exact citation to the VERY END of your answer on a new line. Do not put it in the middle. Use THIS EXACT format:
     Source: Document: [file], Document Page: [y], Lines: [start-end], Section: [z]
     5. NO PREAMBLE: Answer directly. DO NOT repeat the question.
-    6. MISSING INFO: If the context does not contain the answer, output EXACTLY AND ONLY: "I cannot find this information in the provided contract." Do not hallucinate, and do NOT append a Source citation.
-    7. NARROW LINES & METADATA ALIGNMENT: Your citation MUST narrow down to the EXACT lines that support your answer. Do not copy the entire chunk range. Ensure the Section, Page, and Document perfectly match the block where the evidence was found. Do not mix metadata.
-    8. PARTY RESPONSIBILITIES: If asked about the responsibilities or rights of a SPECIFIC party, you MUST strictly separate them from the obligations of other parties. Do not incorrectly assign one party's duties to another.
-    9. EXCLUSIONS & EXCEPTIONS: If the text contains exclusions (e.g., "excluding X") or distinctions (e.g., distinguishing "Deliverables" from "Work Product"), you MUST explicitly mention them in your answer.
-    10. EXACT DEFINITIONS: If asked for the definition or meaning of a capitalized term, you MUST quote the exact definition provided in the text and respect its specific boundaries. Do not just summarize.
-    11. FOCUS: Only answer the specific components requested. Do not mix unrelated topics (e.g., general fees) into specific workflow questions (e.g., checkout process).
+    6. MISSING INFO & PARTIAL ANSWERS: If the exact answer is missing, you MUST still report any highly relevant related information found in the text.
+    7. SPECIFICITY OVER GENERALITIES: When asked for features, scope, deliverables, or project phases, extract the EXACT bullet points, technical lists, or specific features (e.g. POS integration, Google Maps API). Do not summarize with vague boilerplate language if specific details are present.
+    8. DEFINITION BOUNDARIES: When defining a legal term (e.g. "Commercialization", "Change of Control"), strictly adhere to its inclusions and exclusions as stated in the text. Do not contradict yourself by stating an activity is both included and excluded.
+    9. TIMELINE & MILESTONE ACCURACY: Never invent, guess, or shift milestone weeks, dates, or payment terms. Only output the exact timing and amounts literally written in the text. Do not infer "Weeks 7-13" if the text does not explicitly group them that way.
+    10. EXACT DEFINITIONS & EXCLUSIONS: If the text contains exclusions (e.g., "excluding X") or distinctions (e.g., distinguishing "Deliverables" from "Work Product"), you MUST explicitly mention them in your answer.
+    11. FOCUS: Only answer the specific components requested. Do not mix unrelated topics.
     
     Output Format Example 1 (Answer Found):
     Item A is USD 25,000 and Item B is USD 25,000.
@@ -170,8 +170,12 @@ def generate_answer(query, retrieved_docs):
             f.write(prompt)
             
         response = llm.invoke(prompt).strip()
-        validated_response = validate_answer(query, response, retrieved_docs, metadata_summary)
-        return validated_response
+        
+        # Clean up LLM hallucinations where it refuses to answer but still appends a citation
+        if "I cannot find this information" in response:
+            response = "I cannot find this information in the provided contract."
+            
+        return response
     except Exception as e:
         return f"Error generating answer: {str(e)}"
 

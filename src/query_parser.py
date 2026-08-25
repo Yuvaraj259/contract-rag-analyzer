@@ -40,12 +40,20 @@ def classify_query_intent(query: str, llm=None) -> str:
         print(f"Router failed: {e}")
         return "general_search"
 
-def extract_search_terms(query: str, llm=None) -> list:
-    """Extracts key legal terms or clauses from the query using the LLM."""
-    if llm is None:
-        return [query]
-        
-    ner_prompt = f"""
+import functools
+
+@functools.lru_cache(maxsize=128)
+def extract_search_terms(query: str) -> list:
+    """
+    Extracts the core search entities from a natural language query.
+    """
+    try:
+        from src.rag_service import get_llm
+        llm = get_llm()
+        if not llm:
+            return [query]
+            
+        prompt = f"""
     Extract the core legal clauses, terms, or specific entities the user is searching for in this query.
     Return ONLY a JSON list of strings. Do not explain.
     
@@ -54,20 +62,20 @@ def extract_search_terms(query: str, llm=None) -> list:
     Example Output for "Find the SLA penalty and termination clause for Microsoft":
     ["SLA penalty", "termination clause", "Microsoft"]
     """
-    try:
-        resp = llm.invoke(ner_prompt).strip()
+        resp = llm.invoke(prompt).strip()
         if resp.startswith("```json"): resp = resp[7:]
         if resp.endswith("```"): resp = resp[:-3]
+        import json
         extracted = json.loads(resp.strip())
         if isinstance(extracted, list):
             return extracted
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Extract terms failed: {e}")
     return [query]
 
 def parse_query(query: str, llm=None) -> dict:
     query_type = classify_query_intent(query, llm)
-    search_terms = extract_search_terms(query, llm)
+    search_terms = extract_search_terms(query)
     
     return {
         "query_type": query_type,
@@ -99,6 +107,9 @@ def decompose_query(query: str, llm=None) -> list:
     
     return [q.strip() + "?" for q in re.split(r'\?', query) if q.strip()]
 
+import functools
+
+@functools.lru_cache(maxsize=128)
 def expand_query_aliases(query: str) -> str:
     aliases = {
         "effective date": '"effective date" OR "made and effective" OR "commencement date" OR "entered into" OR "executed as of"',
@@ -118,5 +129,31 @@ def expand_query_aliases(query: str) -> str:
     for key, alias_str in aliases.items():
         if key in query_lower:
             return f"({query}) OR ({alias_str})"
+            
+    # Dynamic LLM Expansion
+    try:
+        from src.rag_service import get_llm
+        llm = get_llm()
+        if llm:
+            prompt = f"""You are a legal terminology expert. Provide 3 to 5 single-word legal synonyms or related terms for the following query. Focus on contractual terms.
+Query: "{query}"
+Rules:
+1. Output ONLY a comma-separated list of words.
+2. NO quotes, NO parentheses, NO explanations.
+Example output: warrant, represent, covenant, obligation
+"""
+            resp = llm.invoke(prompt).strip()
+            
+            # Clean response to prevent Elasticsearch syntax errors
+            import re
+            clean_resp = re.sub(r'[^a-zA-Z0-9,\s]', '', resp)
+            synonyms = [s.strip() for s in clean_resp.split(',') if s.strip()]
+            
+            if synonyms:
+                syn_str = " OR ".join(synonyms)
+                return f"({query}) OR ({syn_str})"
+    except Exception as e:
+        print(f"LLM Query expansion failed: {e}")
+        
     return query
 

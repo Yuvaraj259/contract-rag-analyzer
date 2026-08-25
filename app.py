@@ -151,7 +151,7 @@ def init_embeddings():
 
 embeddings_model = init_embeddings()
 
-if "vector_store" not in st.session_state:
+if "vector_store" not in st.session_state or st.session_state.vector_store is None:
     st.session_state.vector_store = load_vector_store(embeddings_model)
 
 if "chat_sessions" not in st.session_state:
@@ -398,20 +398,19 @@ if st.session_state.qa_history:
                                 
                                 doc_answers = []
                                 if indexed_docs:
-                                    for doc in indexed_docs:
-                                        doc_filter = {"source_file": doc}
-                                        retrieved = retrieve_context(sub_q, st.session_state.vector_store, k=5, filter_dict=doc_filter)
-                                        if retrieved:
-                                            ans = generate_answer(sub_q, retrieved)
-                                            doc_answers.append(f"**{doc}**\n{ans}")
-                                            sources = [{"file": r.metadata.get("source_file", "Unknown")} for r in retrieved if r.metadata.get("source_file")]
-                                            for s in sources:
-                                                if s["file"] not in seen_files:
-                                                    seen_files.add(s["file"])
-                                                    unique_sources.append(s)
+                                    doc_filter = {"source_file": indexed_docs}
+                                    retrieved = retrieve_context(sub_q, st.session_state.vector_store, k=10, filter_dict=doc_filter)
+                                    if retrieved:
+                                        ans = generate_answer(sub_q, retrieved)
+                                        doc_answers.append(ans)
+                                        sources = [{"file": r.metadata.get("source_file", "Unknown")} for r in retrieved if r.metadata.get("source_file")]
+                                        for s in sources:
+                                            if s["file"] not in seen_files:
+                                                seen_files.add(s["file"])
+                                                unique_sources.append(s)
                                 else:
                                     # Global Search across all contracts
-                                    retrieved = retrieve_context(sub_q, st.session_state.vector_store, k=10, filter_dict=None)
+                                    retrieved = retrieve_context(sub_q, st.session_state.vector_store, k=15, filter_dict=None)
                                     if retrieved:
                                         ans = generate_answer(sub_q, retrieved)
                                         doc_answers.append(ans)
@@ -425,7 +424,7 @@ if st.session_state.qa_history:
                                     all_final_answers.append(f"### {sub_q}\n\n" + "\n\n".join(doc_answers))
                             else:
                                 filter_dict = {"source_file": selected_resume}
-                                retrieved_docs = retrieve_context(sub_q, st.session_state.vector_store, k=5, filter_dict=filter_dict)
+                                retrieved_docs = retrieve_context(sub_q, st.session_state.vector_store, k=10, filter_dict=filter_dict)
                                 ans = generate_answer(sub_q, retrieved_docs)
                                 all_final_answers.append(f"**{sub_q}**\n\n{ans}")
                                 
