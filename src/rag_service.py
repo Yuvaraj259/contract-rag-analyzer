@@ -143,23 +143,26 @@ def generate_answer(query, retrieved_docs):
     1. THE TEXT IS AUTHORITATIVE: The Metadata provided is just a brief summary. The actual Context text is the ultimate ground truth.
     2. ZERO HALLUCINATION: Do not invent facts, names, dates, amounts, or clauses.
     3. EXACT CITATIONS: The Provided Context has line numbers in brackets at the start of each line, like [Line 77]. Use these to determine EXACTLY which lines the answer came from.
-    4. CITATION FORMAT: If the context contains the answer, you MUST append the exact citation to the VERY END of your answer on a new line. Do not put it in the middle. Use THIS EXACT format:
-    Source: Document: [file], Document Page: [y], Lines: [start-end], Section: [z]
+    4. FORMAT & CITATION STRUCTURE: Provide your answer as a clean, professional bulleted list.
+       - At the end of each bullet point, include an inline citation for just the lines and section, like: (Lines: X-Y, Section: Z).
+       - At the VERY END of your entire answer (on a new line), state the Document and Page number exactly ONCE using THIS EXACT format:
+         Source: Document: [file], Document Page: [y]
     5. NO PREAMBLE: Answer directly. DO NOT repeat the question.
     6. MISSING INFO & PARTIAL ANSWERS: If the exact answer is missing, you MUST still report any highly relevant related information found in the text.
-    7. SPECIFICITY OVER GENERALITIES: When asked for features, scope, deliverables, or project phases, extract the EXACT bullet points, technical lists, or specific features (e.g. POS integration, Google Maps API). Do not summarize with vague boilerplate language if specific details are present.
+    7. EXTRACTING LISTS & FULL SENTENCES: When asked for features, exceptions, or specific provisions, extract the EXACT bullet points or lists. You MUST extract the ENTIRE sentence/clause for each item, even if it spans multiple lines. Do NOT cut off a sentence at a line break. Furthermore, if the text contains a list of multiple items (e.g., i, ii, iii, iv), you MUST extract ALL items. Do not skip any.
     8. DEFINITION BOUNDARIES: When defining a legal term (e.g. "Commercialization", "Change of Control"), strictly adhere to its inclusions and exclusions as stated in the text. Do not contradict yourself by stating an activity is both included and excluded.
     9. TIMELINE & MILESTONE ACCURACY: Never invent, guess, or shift milestone weeks, dates, or payment terms. Only output the exact timing and amounts literally written in the text. Do not infer "Weeks 7-13" if the text does not explicitly group them that way.
     10. EXACT DEFINITIONS & EXCLUSIONS: If the text contains exclusions (e.g., "excluding X") or distinctions (e.g., distinguishing "Deliverables" from "Work Product"), you MUST explicitly mention them in your answer.
     11. FOCUS: Only answer the specific components requested. Do not mix unrelated topics.
     12. ARITHMETIC EXCEPTION: You are explicitly allowed to perform basic mathematical calculations (like addition) if the user asks for a 'total' or 'combined amount' and the individual numbers are explicitly listed in the text.
+    13. MULTI-DOCUMENT CONTEXT: If the Context contains excerpts from multiple different documents, and the user asks a specific question (like a calculation or payment term) that is clearly answered by ONE specific document, ASSUME the user is asking about that document. DO NOT refuse to answer just because other unrelated documents are present. Provide the answer and specify which document it came from.
     
     Output Format Example 1 (Answer Found):
-    Item A is USD 25,000 and Item B is USD 25,000.
-    Total: 25,000 + 25,000 = USD 50,000.
-    The total cost of the project is USD 50,000.
+    - Item A costs USD 25,000 (Lines: 40-41, Section: FEES).
+    - Item B costs USD 25,000 (Lines: 42-43, Section: FEES).
+    - The total cost of the project is USD 50,000 (Lines: 45-46, Section: FEES).
     
-    Source: Document: [Actual Filename], Document Page: 2, Lines: 45-46, Section: FEES
+    Source: Document: 1.pdf, Document Page: 2
 
     Output Format Example 2 (Answer Not Found):
     I cannot find this information in the provided contract.
@@ -173,7 +176,7 @@ def generate_answer(query, retrieved_docs):
         response = llm.invoke(prompt).strip()
         
         # Clean up LLM hallucinations where it refuses to answer but still appends a citation
-        if "I cannot find this information" in response:
+        if response.startswith("I cannot find this information") and len(response.split('\n')) < 3 and "Source:" not in response:
             response = "I cannot find this information in the provided contract."
             
         return response
@@ -193,8 +196,10 @@ def contextualize_query(query: str, history: list) -> str:
     prompt = f"""
     You are an expert at resolving coreferences in conversational search about legal contracts.
     Given a chat history and the latest user query, rewrite the user query to be a standalone query.
-    CRITICAL INSTRUCTION: You MUST explicitly include the specific company names (e.g. VAL, Qualigen, ExxonMobil) and the specific Document Name/Type from the chat history into the standalone query! 
+    CRITICAL INSTRUCTION: You MUST explicitly include the specific company names (e.g. VAL, Qualigen, ExxonMobil) and the specific Document Name/Type from the chat history into the standalone query ONLY IF the user is asking a follow-up question that relies on that context (e.g. they use pronouns like 'it', 'this agreement', or ask about a related clause).
+    WARNING: If the user abruptly asks about a completely new topic, section (e.g., "tell me about ARTICLE 5"), or company that was not the focus of the previous turn, DO NOT force the previous contract name into the query. Assume they are changing the subject.
     For example, if the history is about "the Microsoft NDA", and the user asks "What is the termination period?", the standalone query should be "What is the termination period for the Microsoft NDA?".
+    BUT if they ask "What does Article 5 say?", and Article 5 was never mentioned before, just return "What does Article 5 say?".
     Do NOT answer the query. Return ONLY the rewritten standalone query.
     
     Chat History:

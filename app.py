@@ -366,8 +366,6 @@ if st.session_state.qa_history:
                         unique_sources = []
                         seen_files = set()
                         
-                        last_confident_doc = None
-                        
                         for idx, sub_q in enumerate(sub_queries):
                             status.update(label=f"Analyzing... (Processing question {idx+1}/{len(sub_queries)})")
                             status.write(f"🔍 Executing sub-query: {sub_q}")
@@ -380,18 +378,12 @@ if st.session_state.qa_history:
                                 
                                 if q_confident and q_docs:
                                     indexed_docs = q_docs
-                                    last_confident_doc = q_docs[0]
                                     status.write(f"📌 Explicit document found: {q_docs[0]}")
-                                # 2. Local context? (Inherited from previous question)
-                                elif last_confident_doc:
-                                    indexed_docs = [last_confident_doc]
-                                    status.write(f"📌 Inherited previous context: {last_confident_doc}")
-                                # 3. Safe batch context? (Inherited from group)
+                                # 2. Safe batch context? (Inherited from group)
                                 elif group_context_docs:
                                     indexed_docs = group_context_docs
-                                    last_confident_doc = group_context_docs[0]
                                     status.write(f"📌 Inherited group context: {group_context_docs[0]}")
-                                # 4. Global Search
+                                # 3. Global Search
                                 else:
                                     indexed_docs = [] # Use as flag for global search
                                     status.write("🌐 Broad query: Searching across all contracts...")
