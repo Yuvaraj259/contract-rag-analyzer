@@ -160,7 +160,8 @@ def chunk_document(text, metadata):
             parent_section = section_name
             
         # Determine page and line number by finding where this section starts in the original text
-        pdf_page_number = "1"
+        pdf_page_start = 1
+        pdf_page_end = 1
         line_number = "Unknown"
         doc_page_number = "Unknown"
         document_total_pages = "Unknown"
@@ -169,25 +170,28 @@ def chunk_document(text, metadata):
             page_matches = list(re.finditer(r'---\s*PAGE\s+(\d+)\s*---', text[:idx]))
             last_page_idx = 0
             if page_matches:
-                pdf_page_number = page_matches[-1].group(1)
+                pdf_page_start = int(page_matches[-1].group(1))
+                pdf_page_end = pdf_page_start
                 last_page_idx = page_matches[-1].end()
                 
             # Check if section spans multiple pages
             section_page_matches = list(re.finditer(r'---\s*PAGE\s+(\d+)\s*---', section_content))
             
-            mapping_info = page_mapping.get(pdf_page_number, {})
+            mapping_info = page_mapping.get(str(pdf_page_start), {})
             doc_page_number = mapping_info.get("doc_page", "Unknown")
             document_total_pages = mapping_info.get("total_pages", "Unknown")
             
             if section_page_matches:
-                last_pdf_page = section_page_matches[-1].group(1)
-                if last_pdf_page != pdf_page_number:
-                    pdf_page_number = f"{pdf_page_number}-{last_pdf_page}"
+                last_pdf_page = int(section_page_matches[-1].group(1))
+                if last_pdf_page != pdf_page_end:
+                    pdf_page_end = last_pdf_page
                     # Update doc page to range as well if possible
-                    last_mapping = page_mapping.get(last_pdf_page, {})
+                    last_mapping = page_mapping.get(str(last_pdf_page), {})
                     last_doc_page = last_mapping.get("doc_page", "Unknown")
                     if doc_page_number != "Unknown" and last_doc_page != "Unknown" and doc_page_number != last_doc_page:
                         doc_page_number = f"{doc_page_number}-{last_doc_page}"
+            
+            pdf_page_number = str(pdf_page_start) if pdf_page_start == pdf_page_end else f"{pdf_page_start}-{pdf_page_end}"
             
             line_start = text.count('\n', last_page_idx, idx) + 1
             line_end = line_start + section_content.count('\n')
@@ -196,12 +200,17 @@ def chunk_document(text, metadata):
             else:
                 line_number = f"{line_start}-{line_end}"
             
+            document_line_start = text.count('\n', 0, idx) + 1
+            document_line_end = document_line_start + section_content.count('\n')
+            
         # Try to find a printed document page number like "Page 2 of 7" in the section as fallback
         if doc_page_number == "Unknown" or doc_page_number.startswith("Unknown"):
             doc_page_match = re.search(r'Page\s+(\d+)(?:\s*(?:of|/)\s*(\d+))?', section_content, re.IGNORECASE)
             if doc_page_match:
                 doc_page_number = doc_page_match.group(1)
                 document_total_pages = doc_page_match.group(2) if doc_page_match.group(2) else "Unknown"
+            else:
+                doc_page_number = str(pdf_page_number)
                 
         # Clean the page markers out of the final chunk text so it doesn't confuse the LLM
         clean_section_content = re.sub(r'\n?---\s*PAGE\s+\d+\s*---\n?', '\n', section_content).strip()
@@ -217,39 +226,46 @@ def chunk_document(text, metadata):
                 if sc_idx == -1:
                     sc_idx = text.find(sc[:50], idx)
                     
-                sc_pdf_page = pdf_page_number
+                sc_pdf_start = pdf_page_start
+                sc_pdf_end = pdf_page_end
                 sc_line_num = line_number
                 
                 if sc_idx != -1:
                     page_matches = list(re.finditer(r'---\s*PAGE\s+(\d+)\s*---', text[:sc_idx]))
                     last_sc_page_idx = 0
                     if page_matches:
-                        sc_pdf_page = page_matches[-1].group(1)
+                        sc_pdf_start = int(page_matches[-1].group(1))
+                        sc_pdf_end = sc_pdf_start
                         last_sc_page_idx = page_matches[-1].end()
                         
                     # Check if sub-chunk spans multiple pages
                     sc_page_matches = list(re.finditer(r'---\s*PAGE\s+(\d+)\s*---', sc))
                     
-                    mapping_info = page_mapping.get(sc_pdf_page, {})
+                    mapping_info = page_mapping.get(str(sc_pdf_start), {})
                     sc_doc_page = mapping_info.get("doc_page", "Unknown")
                     sc_total_pages = mapping_info.get("total_pages", "Unknown")
                     
                     if sc_page_matches:
-                        sc_last_pdf = sc_page_matches[-1].group(1)
-                        if sc_last_pdf != sc_pdf_page:
-                            sc_pdf_page = f"{sc_pdf_page}-{sc_last_pdf}"
-                            sc_last_map = page_mapping.get(sc_last_pdf, {})
+                        sc_last_pdf = int(sc_page_matches[-1].group(1))
+                        if sc_last_pdf != sc_pdf_end:
+                            sc_pdf_end = sc_last_pdf
+                            sc_last_map = page_mapping.get(str(sc_last_pdf), {})
                             sc_last_doc = sc_last_map.get("doc_page", "Unknown")
                             if sc_doc_page != "Unknown" and sc_last_doc != "Unknown" and sc_doc_page != sc_last_doc:
                                 sc_doc_page = f"{sc_doc_page}-{sc_last_doc}"
                                 
+                    sc_pdf_page = str(sc_pdf_start) if sc_pdf_start == sc_pdf_end else f"{sc_pdf_start}-{sc_pdf_end}"
+                    
                     if sc_doc_page == "Unknown" or sc_doc_page.startswith("Unknown"):
-                        sc_doc_page = doc_page_number
+                        sc_doc_page = sc_pdf_page
                         sc_total_pages = document_total_pages
                         
                     sc_line_start = text.count('\n', last_sc_page_idx, sc_idx) + 1
                     sc_line_end = sc_line_start + sc.count('\n')
                     sc_line_num = f"{sc_line_start}-{sc_line_end}" if sc_line_start != sc_line_end else str(sc_line_start)
+                    
+                    sc_doc_line_start = text.count('\n', 0, sc_idx) + 1
+                    sc_doc_line_end = sc_doc_line_start + sc.count('\n')
                 
                 # Now clean the page markers out of the sub-chunk before embedding
                 clean_sc = re.sub(r'\n?---\s*PAGE\s+\d+\s*---\n?', '\n', sc).strip()
@@ -258,11 +274,19 @@ def chunk_document(text, metadata):
                 chunk_meta["section"] = section_name
                 chunk_meta["section_number"] = sec_num
                 chunk_meta["clause_number"] = clause_num
-                chunk_meta["page_number"] = str(sc_pdf_page)
-                chunk_meta["pdf_page_number"] = str(sc_pdf_page)
+                chunk_meta["page_number"] = sc_pdf_page
+                chunk_meta["pdf_page_start"] = sc_pdf_start
+                chunk_meta["pdf_page_end"] = sc_pdf_end
+                chunk_meta["pdf_page_number"] = sc_pdf_page
                 chunk_meta["document_page_number"] = str(sc_doc_page)
                 chunk_meta["document_total_pages"] = str(sc_total_pages)
+                
+                chunk_meta["page_line_start"] = int(sc_line_start)
+                chunk_meta["page_line_end"] = int(sc_line_end)
+                chunk_meta["document_line_start"] = int(sc_doc_line_start)
+                chunk_meta["document_line_end"] = int(sc_doc_line_end)
                 chunk_meta["line_number"] = sc_line_num
+                
                 chunk_meta["parent_section"] = parent_section
                 chunk_meta["chunk_index"] = chunk_index
                 chunk_meta["chunk_id"] = f"{metadata.get('document_id', 'doc_unknown')}_chunk_{chunk_index}"
@@ -276,11 +300,19 @@ def chunk_document(text, metadata):
             chunk_meta["section"] = section_name
             chunk_meta["section_number"] = sec_num
             chunk_meta["clause_number"] = clause_num
-            chunk_meta["page_number"] = str(pdf_page_number)
-            chunk_meta["pdf_page_number"] = str(pdf_page_number)
+            chunk_meta["page_number"] = pdf_page_number
+            chunk_meta["pdf_page_start"] = pdf_page_start
+            chunk_meta["pdf_page_end"] = pdf_page_end
+            chunk_meta["pdf_page_number"] = pdf_page_number
             chunk_meta["document_page_number"] = str(doc_page_number)
             chunk_meta["document_total_pages"] = str(document_total_pages)
+            
+            chunk_meta["page_line_start"] = int(line_start)
+            chunk_meta["page_line_end"] = int(line_end)
+            chunk_meta["document_line_start"] = int(document_line_start)
+            chunk_meta["document_line_end"] = int(document_line_end)
             chunk_meta["line_number"] = line_number
+            
             chunk_meta["parent_section"] = parent_section
             chunk_meta["chunk_index"] = chunk_index
             chunk_meta["chunk_id"] = f"{metadata.get('document_id', 'doc_unknown')}_chunk_{chunk_index}"

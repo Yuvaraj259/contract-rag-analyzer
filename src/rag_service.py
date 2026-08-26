@@ -155,7 +155,8 @@ def generate_answer(query, retrieved_docs):
     10. EXACT DEFINITIONS & EXCLUSIONS: If the text contains exclusions (e.g., "excluding X") or distinctions (e.g., distinguishing "Deliverables" from "Work Product"), you MUST explicitly mention them in your answer.
     11. FOCUS: Only answer the specific components requested. Do not mix unrelated topics.
     12. ARITHMETIC EXCEPTION: You are explicitly allowed to perform basic mathematical calculations (like addition) if the user asks for a 'total' or 'combined amount' and the individual numbers are explicitly listed in the text.
-    13. MULTI-DOCUMENT CONTEXT: If the Context contains excerpts from multiple different documents, and the user asks a specific question (like a calculation or payment term) that is clearly answered by ONE specific document, ASSUME the user is asking about that document. DO NOT refuse to answer just because other unrelated documents are present. Provide the answer and specify which document it came from.
+    13. MULTI-DOCUMENT CONTEXT: If the Context contains excerpts from multiple different documents, and the user asks a specific question that is clearly answered by ONE specific document, provide the answer and specify which document it came from.
+    14. NO CROSS-DOCUMENT MIXING & EXACT QUOTES: Do not synthesize or merge text from different documents into a single sentence or definition. If the query asks for a definition, you MUST list the definition from EACH document separately. DO NOT paraphrase or introduce the quote with your own words (e.g., do not say "X is defined as"). Start the bullet point immediately with the exact quote from the text.
     
     Output Format Example 1 (Answer Found):
     - Item A costs USD 25,000 (Lines: 40-41, Section: FEES).

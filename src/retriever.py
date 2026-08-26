@@ -101,7 +101,7 @@ def rerank_docs(query, docs, top_n=5):
                     score += 50.0
                 elif ("delivery" in q_lower or "milestone" in q_lower) and ("milestone" in sec or "delivery" in sec):
                     score += 50.0
-                elif ("mean" in q_lower or "define" in q_lower or "definition" in q_lower) and ("article 1" in sec or "definition" in sec):
+                elif ("what is" in q_lower or "what are" in q_lower or "mean" in q_lower or "define" in q_lower or "definition" in q_lower) and ("article 1" in sec or "definition" in sec):
                     score += 50.0
                 elif ("confidential" in q_lower or "non-disclosure" in q_lower or "nda" in q_lower) and ("confidential" in sec or "non-disclosure" in sec):
                     score += 50.0
@@ -124,7 +124,7 @@ def rerank_docs(query, docs, top_n=5):
         print(f"Reranking failed: {e}")
         return docs[:top_n]
 
-def retrieve_context(query, vector_store, k=5, filter_dict=None, enable_reranking=True):
+def retrieve_context(query, vector_store, k=5, filter_dict=None, enable_reranking=True, operator="AND"):
     """
     Retrieves context for a single decomposed query, using both semantic search and BM25 fallback.
     """
@@ -185,7 +185,7 @@ def retrieve_context(query, vector_store, k=5, filter_dict=None, enable_rerankin
         if "delivery" in q_lower or "time" in q_lower:
             section_boosts.append({"match": {"metadata.section": {"query": "MILESTONE", "boost": 3}}})
             section_boosts.append({"match": {"metadata.section": {"query": "DELIVERY", "boost": 3}}})
-        if "mean" in q_lower or "define" in q_lower or "definition" in q_lower:
+        if "what is" in q_lower or "what are" in q_lower or "mean" in q_lower or "define" in q_lower or "definition" in q_lower:
             section_boosts.append({"match": {"metadata.section": {"query": "ARTICLE 1", "boost": 3}}})
             section_boosts.append({"match": {"metadata.section": {"query": "DEFINITIONS", "boost": 3}}})
         if "confidential" in q_lower or "non-disclosure" in q_lower or "nda" in q_lower:
@@ -221,6 +221,7 @@ def retrieve_context(query, vector_store, k=5, filter_dict=None, enable_rerankin
                     {
                         "query_string": {
                             "query": expanded_query,
+                            "default_operator": operator,
                             "fields": ["text^2", "metadata.contract_title^5", "metadata.source_file", "metadata.section^3"]
                         }
                     }

@@ -2,12 +2,12 @@ import json
 import re
 
 def detect_operator(query: str) -> str:
-    q = query.lower()
-    if " or " in q:
+    # Only enforce strict boolean logic if the user explicitly capitalizes it
+    if " OR " in query:
         return "OR"
-    if " and " in q or " both " in q:
+    if " AND " in query:
         return "AND"
-    return "AND" # Default to AND for contract searches
+    return "OR" # Default to OR for better BM25 recall on natural language queries
 
 def classify_query_intent(query: str, llm=None) -> str:
     """
@@ -91,6 +91,8 @@ def decompose_query(query: str, llm=None) -> list:
     You are an expert at breaking down complex legal queries into individual, standalone sub-questions.
     If the query asks multiple independent questions, output each as a separate string in a JSON list.
     If it is a single question, output a list with one string.
+    CRITICAL RULE 1: Do NOT split single unified legal concepts (e.g., 'Applicable Laws and Regulations', 'Term and Termination') into multiple questions.
+    CRITICAL RULE 2: If the user's query mentions a specific document name, contract title, or context (e.g., 'in the RECIPE DEVELOPMENT AGREEMENT' or 'from document X'), you MUST preserve this document name EXACTLY as written in EVERY sub-question you generate. Do NOT strip it out.
     DO NOT explain. Output ONLY a valid JSON list of strings.
     
     Query: "{query}"
@@ -101,7 +103,14 @@ def decompose_query(query: str, llm=None) -> list:
         if resp.endswith("```"): resp = resp[:-3]
         queries = json.loads(resp.strip())
         if isinstance(queries, list) and len(queries) > 0:
-            return queries
+            # Deduplicate while preserving order
+            seen = set()
+            deduped = []
+            for q in queries:
+                if q not in seen:
+                    seen.add(q)
+                    deduped.append(q)
+            return deduped
     except Exception:
         pass
     

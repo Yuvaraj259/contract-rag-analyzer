@@ -316,7 +316,7 @@ if not st.session_state.qa_history:
     """, unsafe_allow_html=True)
 
 if st.session_state.qa_history:
-    from src.query_parser import parse_query
+    from src.query_parser import parse_query, detect_operator
     from src.retriever import retrieve_context
     from src.rag_service import generate_answer, get_llm, contextualize_query
     
@@ -374,7 +374,7 @@ if st.session_state.qa_history:
                                 # 1. Explicit document named in query? (BM25 Title/Party check)
                                 status.write("🔍 Checking for explicitly named contracts...")
                                 from src.retriever import check_explicit_intent
-                                q_docs, q_confident = check_explicit_intent(sub_q, st.session_state.vector_store)
+                                q_docs, q_confident = check_explicit_intent(search_q, st.session_state.vector_store)
                                 
                                 if q_confident and q_docs:
                                     indexed_docs = q_docs
@@ -389,9 +389,10 @@ if st.session_state.qa_history:
                                     status.write("🌐 Broad query: Searching across all contracts...")
                                 
                                 doc_answers = []
+                                sub_q_op = detect_operator(sub_q)
                                 if indexed_docs:
                                     doc_filter = {"source_file": indexed_docs}
-                                    retrieved = retrieve_context(sub_q, st.session_state.vector_store, k=10, filter_dict=doc_filter)
+                                    retrieved = retrieve_context(sub_q, st.session_state.vector_store, k=10, filter_dict=doc_filter, operator=sub_q_op)
                                     if retrieved:
                                         ans = generate_answer(sub_q, retrieved)
                                         doc_answers.append(ans)
@@ -402,7 +403,7 @@ if st.session_state.qa_history:
                                                 unique_sources.append(s)
                                 else:
                                     # Global Search across all contracts
-                                    retrieved = retrieve_context(sub_q, st.session_state.vector_store, k=15, filter_dict=None)
+                                    retrieved = retrieve_context(sub_q, st.session_state.vector_store, k=15, filter_dict=None, operator=sub_q_op)
                                     if retrieved:
                                         ans = generate_answer(sub_q, retrieved)
                                         doc_answers.append(ans)
@@ -415,8 +416,9 @@ if st.session_state.qa_history:
                                 if doc_answers:
                                     all_final_answers.append(f"### {sub_q}\n\n" + "\n\n".join(doc_answers))
                             else:
+                                sub_q_op = detect_operator(sub_q)
                                 filter_dict = {"source_file": selected_resume}
-                                retrieved_docs = retrieve_context(sub_q, st.session_state.vector_store, k=10, filter_dict=filter_dict)
+                                retrieved_docs = retrieve_context(sub_q, st.session_state.vector_store, k=10, filter_dict=filter_dict, operator=sub_q_op)
                                 ans = generate_answer(sub_q, retrieved_docs)
                                 all_final_answers.append(f"**{sub_q}**\n\n{ans}")
                                 

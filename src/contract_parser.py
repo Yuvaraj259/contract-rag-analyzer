@@ -60,7 +60,7 @@ def extract_parties(text):
     # Priority 2: Use SpaCy NER to find ORGs in the first 1500 characters, BUT ignore known non-party text
     if not parties and nlp:
         # Strip out common reference text that trips up NER
-        safe_text = re.sub(r'(?i)(united nations centre for trade facilitation|electronic business|un/cefact|applicable laws)', '', text[:1500])
+        safe_text = re.sub(r'(?i)(united nations centre for trade facilitation|electronic business|un/cefact|netherlands law)', '', text[:1500])
         doc = nlp(safe_text) 
         for ent in doc.ents:
             if ent.label_ == "ORG":
