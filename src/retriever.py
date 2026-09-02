@@ -82,44 +82,9 @@ def rerank_docs(query, docs, top_n=5):
         pairs = [[query, doc.page_content] for doc in docs]
         scores = reranker.predict(pairs)
         
-        q_lower = query.lower()
-        boosted_scores = []
-        for doc, base_score in zip(docs, scores):
-            score = base_score
-            sec = doc.metadata.get("section", "").lower()
-            if sec:
-                if sec in q_lower:
-                    score += 50.0
-                # Semantic match fallbacks
-                elif "scope" in q_lower and "scope" in sec:
-                    score += 50.0
-                elif ("price" in q_lower or "quotation" in q_lower or "cost" in q_lower or "amount" in q_lower) and ("fee" in sec or "payment" in sec or "commercial" in sec or "pricing" in sec):
-                    score += 50.0
-                elif ("parties" in q_lower or "between" in q_lower) and ("intro" in sec or "parties" in sec or "between" in sec):
-                    score += 50.0
-                elif ("duration" in q_lower or "term" in q_lower) and ("term" in sec or "period" in sec):
-                    score += 50.0
-                elif ("delivery" in q_lower or "milestone" in q_lower) and ("milestone" in sec or "delivery" in sec):
-                    score += 50.0
-                elif ("what is" in q_lower or "what are" in q_lower or "mean" in q_lower or "define" in q_lower or "definition" in q_lower) and ("article 1" in sec or "definition" in sec):
-                    score += 50.0
-                elif ("confidential" in q_lower or "non-disclosure" in q_lower or "nda" in q_lower) and ("confidential" in sec or "non-disclosure" in sec):
-                    score += 50.0
-                elif ("intellectual property" in q_lower or "ip" in q_lower or "ownership" in q_lower or "rights" in q_lower) and ("intellectual property" in sec or "ownership" in sec or "rights" in sec):
-                    score += 50.0
-                elif ("warrant" in q_lower or "guarantee" in q_lower or "representation" in q_lower) and ("warrant" in sec or "representation" in sec or "guarantee" in sec):
-                    score += 50.0
-                elif ("manufacture" in q_lower or "manufacturing" in q_lower) and ("manufacture" in sec or "production" in sec):
-                    score += 50.0
-                elif ("market" in q_lower or "promot" in q_lower or "sale" in q_lower or "commercialize" in q_lower or "distribut" in q_lower) and ("commercialize" in sec or "market" in sec or "sale" in sec or "promot" in sec or "distribut" in sec):
-                    score += 50.0
-                elif ("change of control" in q_lower or "assign" in q_lower) and ("assign" in sec or "control" in sec or "miscellaneous" in sec):
-                    score += 50.0
-                    
-            boosted_scores.append((doc, score))
-            
-        boosted_scores.sort(key=lambda x: x[1], reverse=True)
-        return [doc for doc, score in boosted_scores[:top_n]]
+        scored = list(zip(docs, scores))
+        scored.sort(key=lambda x: x[1], reverse=True)
+        return [doc for doc, score in scored[:top_n]]
     except Exception as e:
         print(f"Reranking failed: {e}")
         return docs[:top_n]
@@ -164,49 +129,9 @@ def retrieve_context(query, vector_store, k=5, filter_dict=None, enable_rerankin
         # Expand query for BM25 lexical match
         expanded_query = expand_query_aliases(query)
         
-        # Determine Section Boosts
-        q_lower = query.lower()
+        # Determine Section Boosts (Removed hardcoded section heuristics for better generalization)
         section_boosts = []
-        if "scope" in q_lower:
-            section_boosts.append({"match": {"metadata.section": {"query": "SCOPE OF WORK", "boost": 3}}})
-        if "duration" in q_lower or "period" in q_lower or "term" in q_lower:
-            section_boosts.append({"match": {"metadata.section": {"query": "TERM", "boost": 3}}})
-            section_boosts.append({"match": {"metadata.section": {"query": "TERM OF AGREEMENT", "boost": 3}}})
-            section_boosts.append({"match": {"metadata.section": {"query": "TERM AND TERMINATION", "boost": 3}}})
-        if "quotation" in q_lower or "price" in q_lower or "cost" in q_lower or "amount" in q_lower or "payable" in q_lower:
-            section_boosts.append({"match": {"metadata.section": {"query": "PAYMENT TERMS", "boost": 3}}})
-            section_boosts.append({"match": {"metadata.section": {"query": "PAYMENT", "boost": 3}}})
-            section_boosts.append({"match": {"metadata.section": {"query": "FEES", "boost": 3}}})
-            section_boosts.append({"match": {"metadata.section": {"query": "ESTIMATION AND COMMERCIALS", "boost": 3}}})
-        if "parties" in q_lower or "between" in q_lower:
-            section_boosts.append({"match": {"metadata.section": {"query": "INTRO", "boost": 3}}})
-            section_boosts.append({"match": {"metadata.section": {"query": "PARTIES", "boost": 3}}})
-            section_boosts.append({"match": {"metadata.section": {"query": "BETWEEN:", "boost": 3}}})
-        if "delivery" in q_lower or "time" in q_lower:
-            section_boosts.append({"match": {"metadata.section": {"query": "MILESTONE", "boost": 3}}})
-            section_boosts.append({"match": {"metadata.section": {"query": "DELIVERY", "boost": 3}}})
-        if "what is" in q_lower or "what are" in q_lower or "mean" in q_lower or "define" in q_lower or "definition" in q_lower:
-            section_boosts.append({"match": {"metadata.section": {"query": "ARTICLE 1", "boost": 3}}})
-            section_boosts.append({"match": {"metadata.section": {"query": "DEFINITIONS", "boost": 3}}})
-        if "confidential" in q_lower or "non-disclosure" in q_lower or "nda" in q_lower:
-            section_boosts.append({"match": {"metadata.section": {"query": "CONFIDENTIALITY", "boost": 4}}})
-            section_boosts.append({"match": {"metadata.section": {"query": "CONFIDENTIAL INFORMATION", "boost": 4}}})
-            section_boosts.append({"match": {"metadata.section": {"query": "NON-DISCLOSURE", "boost": 4}}})
-        if "intellectual property" in q_lower or "ip" in q_lower or "ownership" in q_lower or "rights" in q_lower:
-            section_boosts.append({"match": {"metadata.section": {"query": "INTELLECTUAL PROPERTY", "boost": 3}}})
-            section_boosts.append({"match": {"metadata.section": {"query": "OWNERSHIP", "boost": 3}}})
-        if "warrant" in q_lower or "guarantee" in q_lower or "representation" in q_lower:
-            section_boosts.append({"match": {"metadata.section": {"query": "REPRESENTATIONS", "boost": 3}}})
-            section_boosts.append({"match": {"metadata.section": {"query": "WARRANTIES", "boost": 3}}})
-        if "manufacture" in q_lower or "manufacturing" in q_lower:
-            section_boosts.append({"match": {"metadata.section": {"query": "MANUFACTURING", "boost": 3}}})
-        if "market" in q_lower or "promot" in q_lower or "sale" in q_lower or "commercialize" in q_lower or "distribut" in q_lower:
-            section_boosts.append({"match": {"metadata.section": {"query": "COMMERCIALIZATION", "boost": 3}}})
-            section_boosts.append({"match": {"metadata.section": {"query": "MARKETING", "boost": 3}}})
-            section_boosts.append({"match": {"metadata.section": {"query": "DISTRIBUTION", "boost": 3}}})
-        if "change of control" in q_lower or "assign" in q_lower:
-            section_boosts.append({"match": {"metadata.section": {"query": "ASSIGNMENT", "boost": 3}}})
-            section_boosts.append({"match": {"metadata.section": {"query": "MISCELLANEOUS", "boost": 2}}})
+
             
         import re
         quoted_terms = re.findall(r'"([^"]*)"', query) + re.findall(r"'([^']*)'", query)
@@ -219,7 +144,7 @@ def retrieve_context(query, vector_store, k=5, filter_dict=None, enable_rerankin
             "bool": {
                 "should": [
                     {
-                        "query_string": {
+                        "simple_query_string": {
                             "query": expanded_query,
                             "default_operator": operator,
                             "fields": ["text^2", "metadata.contract_title^5", "metadata.source_file", "metadata.section^3"]
@@ -279,13 +204,27 @@ def get_group_context(queries, vector_store, top_k=1):
         return [], False
         
     doc_scores = {}
+    explicit_docs_found = set()
+    
     for q in queries:
+        # Prevent group context if multiple distinct documents are explicitly named
+        q_docs, is_conf = check_explicit_intent(q, vector_store)
+        if is_conf and q_docs:
+            for d in q_docs:
+                explicit_docs_found.add(d)
+                
         retrieved = retrieve_context(q, vector_store, k=4, filter_dict=None, enable_reranking=True)
+        seen_in_query = set()
         for i, doc in enumerate(retrieved):
             source = doc.metadata.get("source_file")
-            if source:
+            if source and source not in seen_in_query:
                 score = max(4 - i, 1)
                 doc_scores[source] = doc_scores.get(source, 0) + score
+                seen_in_query.add(source)
+                
+    if len(explicit_docs_found) > 1:
+        # User explicitly asked about multiple different contracts in this batch
+        return [], False
                 
     if not doc_scores:
         return [], False
@@ -332,64 +271,58 @@ def get_question_context(query, vector_store):
 
 def check_explicit_intent(query, vector_store):
     """
-    Fast BM25 check against metadata to see if a specific document is explicitly named.
-    Avoids expensive Vector/Cross-Encoder searches if we can resolve context instantly.
+    LLM-based Entity Resolution and Document Binding.
+    Uses PostgreSQL metadata to identify if a query explicitly refers to specific documents.
     """
     if not vector_store:
         return [], False
         
     try:
-        from src.query_parser import extract_search_terms
         from src.rag_service import get_llm
         llm = get_llm()
-        
-        # Extract the core entities to remove noise words like 'What does mean'
-        search_terms = extract_search_terms(query)
-        clean_query = " ".join(search_terms).replace("-", " ").replace("–", " ").replace("—", " ")
-        
-        q_lower = query.lower()
-        
-        # Fast explicit check for known parties removed. We now rely on dynamic Elasticsearch metadata matching!
-            
-        es_client = vector_store.client
-        from src.vector_store import INDEX_NAME
-        
-        body = {
-            "query": {
-                "multi_match": {
-                    "query": query,
-                    "fields": ["metadata.contract_title^5", "metadata.source_file^5", "metadata.parties^5"],
-                    "type": "cross_fields",
-                    "operator": "or"
-                }
-            },
-            "size": 100,
-            "collapse": {
-                "field": "metadata.source_file.keyword"
-            }
-        }
-        res = es_client.search(index=INDEX_NAME, body=body)
-        hits = res.get("hits", {}).get("hits", [])
-        
-        if not hits:
+        if not llm:
             return [], False
             
-        top_hit = hits[0]
-        score = top_hit.get("_score", 0)
+        from src.vector_store import get_indexed_documents
+        from src.db_service import get_contract_info
         
-        top_docs = []
-        if score >= 5.0:
-            threshold = max(5.0, score * 0.7)
-            source = top_hit.get("_source", {}).get("metadata", {}).get("source_file")
-            if source:
-                top_docs.append(source)
-            for hit in hits[1:]:
-                hit_score = hit.get("_score", 0)
-                hit_source = hit.get("_source", {}).get("metadata", {}).get("source_file")
-                if hit_score >= threshold and hit_source and hit_source not in top_docs:
-                    top_docs.append(hit_source)
-            return top_docs, True
+        indexed_files = get_indexed_documents(vector_store)
+        if not indexed_files:
+            return [], False
             
+        contract_info = get_contract_info(indexed_files)
+        
+        info_str = "Available Contracts:\n"
+        for info in contract_info:
+            info_str += f"- Filename: {info['file']} | Title: {info['title']} | Parties: {', '.join(info['parties'])}\n"
+            
+        prompt = f"""
+        You are an expert Legal Document Router. Your task is to perform Entity Resolution and Document Binding.
+        Look at the user's query and the list of available contracts. Determine if the query specifically refers to one or more of these contracts by name, title, or party.
+        
+        {info_str}
+        
+        Query: "{query}"
+        
+        CRITICAL RULES:
+        1. If the query clearly asks about a specific contract (e.g. mentions "PhaseBio" and PhaseBio is a party in 5.pdf), return a JSON list containing the exact filename (e.g. ["5.pdf"]).
+        2. If the query compares two contracts, return both (e.g. ["1.pdf", "5.pdf"]).
+        3. If the query is generic (e.g. "What is the penalty?") and does NOT name a specific contract or party, return an empty list [].
+        4. Do NOT explain. Return ONLY a valid JSON list of filenames.
+        """
+        
+        resp = llm.invoke(prompt).strip()
+        if resp.startswith("```json"): resp = resp[7:]
+        if resp.endswith("```"): resp = resp[:-3]
+        
+        import json
+        target_files = json.loads(resp.strip())
+        
+        if isinstance(target_files, list) and len(target_files) > 0:
+            valid_files = [f for f in target_files if f in indexed_files]
+            if valid_files:
+                return valid_files, True
+                
     except Exception as e:
         print(f"Explicit intent check failed: {e}")
         

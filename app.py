@@ -256,7 +256,11 @@ with st.sidebar:
                         st.session_state.vector_store
                     )
                     save_vector_store(st.session_state.vector_store)
+                    status_text.empty()
                     st.success("Indexing complete!")
+                else:
+                    status_text.empty()
+                    st.info("No new documents to index (they might be duplicates or already exist in the database).")
                     
     st.divider()
     st.header("Database")
@@ -374,7 +378,7 @@ if st.session_state.qa_history:
                                 # 1. Explicit document named in query? (BM25 Title/Party check)
                                 status.write("🔍 Checking for explicitly named contracts...")
                                 from src.retriever import check_explicit_intent
-                                q_docs, q_confident = check_explicit_intent(search_q, st.session_state.vector_store)
+                                q_docs, q_confident = check_explicit_intent(sub_q, st.session_state.vector_store)
                                 
                                 if q_confident and q_docs:
                                     indexed_docs = q_docs
@@ -392,7 +396,7 @@ if st.session_state.qa_history:
                                 sub_q_op = detect_operator(sub_q)
                                 if indexed_docs:
                                     doc_filter = {"source_file": indexed_docs}
-                                    retrieved = retrieve_context(sub_q, st.session_state.vector_store, k=10, filter_dict=doc_filter, operator=sub_q_op)
+                                    retrieved = retrieve_context(sub_q, st.session_state.vector_store, k=15, filter_dict=doc_filter, operator=sub_q_op)
                                     if retrieved:
                                         ans = generate_answer(sub_q, retrieved)
                                         doc_answers.append(ans)
@@ -414,13 +418,21 @@ if st.session_state.qa_history:
                                                 unique_sources.append(s)
                                                 
                                 if doc_answers:
-                                    all_final_answers.append(f"### {sub_q}\n\n" + "\n\n".join(doc_answers))
+                                    combined = "\n\n".join(doc_answers)
+                                    if combined.strip().startswith("- **"):
+                                        all_final_answers.append(combined)
+                                    else:
+                                        all_final_answers.append(f"### {sub_q}\n\n" + combined)
                             else:
                                 sub_q_op = detect_operator(sub_q)
                                 filter_dict = {"source_file": selected_resume}
                                 retrieved_docs = retrieve_context(sub_q, st.session_state.vector_store, k=10, filter_dict=filter_dict, operator=sub_q_op)
                                 ans = generate_answer(sub_q, retrieved_docs)
-                                all_final_answers.append(f"**{sub_q}**\n\n{ans}")
+                                
+                                if ans.strip().startswith("- **"):
+                                    all_final_answers.append(ans)
+                                else:
+                                    all_final_answers.append(f"**{sub_q}**\n\n{ans}")
                                 
                                 sources = [{"file": doc.metadata.get("source_file", "Unknown")} for doc in retrieved_docs if doc.metadata.get("source_file")]
                                 for s in sources:
@@ -458,9 +470,30 @@ if st.session_state.qa_history:
                         st.error(f"Failed to generate answer: {res.get('error')}")
                     else:
                         st.write(res.get("answer", ""))
+                        
+                # Add follow-up input box at the end of the last message in the chain
+                if node_idx == len(session["chain"]) - 1:
+                    st.write("") # small spacing
+                    with st.container(border=True):
+                        st.markdown("<div style='color: #666; font-size: 0.9em; margin-bottom: 8px;'>💬 Ask a follow-up about this answer</div>", unsafe_allow_html=True)
+                        col1, col2 = st.columns([5, 1])
+                        with col1:
+                            follow_up = st.text_input("Any query in your mind?", key=f"followup_{session_idx}_{node_idx}", label_visibility="collapsed", placeholder="Any query in your mind?")
+                        with col2:
+                            if st.button("🔍 Ask", key=f"ask_{session_idx}_{node_idx}", use_container_width=True):
+                                if follow_up:
+                                    st.session_state.qa_history[session_idx]["chain"].append({"q": follow_up, "result": None, "query_type": None})
+                                    # Update the session in chat_sessions
+                                    for sess in st.session_state.chat_sessions:
+                                        if sess["id"] == st.session_state.current_session_id:
+                                            sess["qa_history"] = st.session_state.qa_history
+                                            break
+                                    from src.session_store import save_sessions
+                                    save_sessions(st.session_state.chat_sessions)
+                                    st.rerun()
 
-# Fixed Chat Input at the bottom
-if prompt := st.chat_input("Ask anything..."):
+# Fixed Chat Input at the bottom - Adds a new independent thread to the same screen
+if prompt := st.chat_input("Ask a brand new question..."):
     if not st.session_state.vector_store:
         st.warning("Please upload and process some contracts first.")
     else:
@@ -476,8 +509,13 @@ if prompt := st.chat_input("Ask anything..."):
             })
             st.session_state.current_session_id = new_session_id
         else:
-            # Append to the first QA thread in the current session
-            st.session_state.qa_history[0]["chain"].append({"q": prompt, "result": None, "query_type": None})
+            # Append a BRAND NEW thread to the screen so it doesn't cross-contaminate history
+            st.session_state.qa_history.append({"chain": [{"q": prompt, "result": None, "query_type": None}]})
+            # Update the session in chat_sessions
+            for sess in st.session_state.chat_sessions:
+                if sess["id"] == st.session_state.current_session_id:
+                    sess["qa_history"] = st.session_state.qa_history
+                    break
             
         from src.session_store import save_sessions
         save_sessions(st.session_state.chat_sessions)

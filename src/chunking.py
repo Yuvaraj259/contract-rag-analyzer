@@ -35,12 +35,14 @@ def split_into_sections(text):
         "SKILLS", "TECHNICAL SKILLS", "CORE COMPETENCIES",
         "PROJECTS", "PERSONAL PROJECTS", "ACADEMIC PROJECTS",
         "CERTIFICATIONS", "AWARDS", "PUBLICATIONS"
+        # Exhibits
+        r"EXHIBIT\s+[A-Z\d]+", r"SCHEDULE\s+[A-Z\d]+", r"APPENDIX\s+[A-Z\d]+", r"ANNEX\s+[A-Z\d]+"
     ]
     
-    # Regex to match headers (e.g. "EXPERIENCE" or "WORK EXPERIENCE" on its own line)
-    # Allows for some leading/trailing whitespace or special chars like ":"
+    # Regex to match headers (e.g. "ARTICLE 5 - COMPENSATION" on its own line)
+    # Allows for trailing text on the line, but captures the whole line as the section name
     header_pattern = re.compile(
-        r'^\s*(' + '|'.join(section_headers) + r')\s*:?\s*$',
+        r'^\s*(' + '|'.join(section_headers) + r')(?:[\s\:\-\.].{0,80})?$',
         re.IGNORECASE | re.MULTILINE
     )
     
@@ -95,51 +97,111 @@ def extract_section_numbers(section_name):
 
 def extract_page_mapping(text):
     """
-    Returns a dictionary mapping pdf_page_number (str) to a dict:
-    {"doc_page": str, "total_pages": str}
+    Returns a dictionary mapping pdf_page_number (int) to doc_page (str or None)
     """
     mapping = {}
     parts = re.split(r'---\s*PAGE\s+(\d+)\s*---', text)
     
     for i in range(1, len(parts), 2):
-        pdf_page_num = parts[i]
+        pdf_page_num = int(parts[i])
         page_content = parts[i+1]
         
+        doc_page = None
         doc_page_matches = list(re.finditer(r'Page\s+(\d+)(?:\s*(?:of|/)\s*(\d+))?', page_content, re.IGNORECASE))
         if doc_page_matches:
-            match = doc_page_matches[-1]
-            mapping[pdf_page_num] = {
-                "doc_page": match.group(1),
-                "total_pages": match.group(2) if match.group(2) else "Unknown"
-            }
+            doc_page = doc_page_matches[-1].group(1)
         else:
             alt_matches = list(re.finditer(r'^\s*-\s*(\d+)\s*-\s*$', page_content, re.MULTILINE))
             if alt_matches:
-                match = alt_matches[-1]
-                mapping[pdf_page_num] = {
-                    "doc_page": match.group(1),
-                    "total_pages": "Unknown"
-                }
-            else:
-                mapping[pdf_page_num] = {
-                    "doc_page": "Unknown",
-                    "total_pages": "Unknown"
-                }
+                doc_page = alt_matches[-1].group(1)
+                
+        mapping[pdf_page_num] = doc_page
     return mapping
+
+def build_line_index(text, page_mapping):
+    lines_info = []
+    current_pdf_page = 1
+    current_line_num = 1
+    char_pos = 0
+    
+    lines = text.split('\n')
+    for line in lines:
+        m = re.match(r'^---\s*PAGE\s+(\d+)\s*---$', line.strip())
+        if m:
+            current_pdf_page = int(m.group(1))
+            current_line_num = 1
+            lines_info.append({
+                "is_marker": True,
+                "text": line,
+                "pdf_page": current_pdf_page,
+                "doc_page": page_mapping.get(current_pdf_page),
+                "line_num": 0,
+                "char_start": char_pos,
+                "char_end": char_pos + len(line)
+            })
+        else:
+            lines_info.append({
+                "is_marker": False,
+                "text": line,
+                "pdf_page": current_pdf_page,
+                "doc_page": page_mapping.get(current_pdf_page),
+                "line_num": current_line_num,
+                "char_start": char_pos,
+                "char_end": char_pos + len(line)
+            })
+            current_line_num += 1
+            
+        char_pos += len(line) + 1 # +1 for \n
+        
+    return lines_info
+
+import json
+
+def extract_page_ranges(section_lines):
+    if not section_lines:
+        return []
+        
+    page_ranges = []
+    current_pdf = None
+    group_lines = []
+    
+    def flush_group():
+        nonlocal page_ranges, group_lines
+        if not group_lines:
+            return
+        pdf_page = group_lines[0]["pdf_page"]
+        doc_page = group_lines[0]["doc_page"]
+        start_l = group_lines[0]["line_num"]
+        end_l = group_lines[-1]["line_num"]
+        
+        page_ranges.append({
+            "pdf_page": pdf_page,
+            "document_page": doc_page,
+            "line_start": start_l,
+            "line_end": end_l
+        })
+        group_lines.clear()
+
+    for li in section_lines:
+        if li["pdf_page"] != current_pdf:
+            flush_group()
+            current_pdf = li["pdf_page"]
+        group_lines.append(li)
+        
+    flush_group()
+    return page_ranges
 
 def chunk_document(text, metadata):
     """
-    Splits the document into section-based chunks. If a section is too large,
-    falls back to RecursiveCharacterTextSplitter for that section.
-    Returns a list of dicts: {"text": chunk_text, "metadata": metadata}
+    Splits the document into section-based chunks with structured line and page metadata.
     """
     sections = split_into_sections(text)
     page_mapping = extract_page_mapping(text)
+    lines_info = build_line_index(text, page_mapping)
     
-    # Fallback splitter for very large sections
     text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=800,
-        chunk_overlap=100,
+        chunk_size=1500,
+        chunk_overlap=200,
         length_function=len
     )
     
@@ -152,172 +214,77 @@ def chunk_document(text, metadata):
         section_content = sec_data["content"]
         idx = sec_data["start_idx"]
         
-        if not section_content:
+        if not section_content.strip():
             continue
             
         sec_num, clause_num = extract_section_numbers(section_name)
         if "ARTICLE" in section_name:
             parent_section = section_name
             
-        # Determine page and line number by finding where this section starts in the original text
-        pdf_page_start = 1
-        pdf_page_end = 1
-        line_number = "Unknown"
-        doc_page_number = "Unknown"
-        document_total_pages = "Unknown"
+        section_end = idx + len(section_content)
         
-        if idx != -1:
-            page_matches = list(re.finditer(r'---\s*PAGE\s+(\d+)\s*---', text[:idx]))
-            last_page_idx = 0
-            if page_matches:
-                pdf_page_start = int(page_matches[-1].group(1))
-                pdf_page_end = pdf_page_start
-                last_page_idx = page_matches[-1].end()
+        # Get lines for this section
+        section_lines = []
+        for li in lines_info:
+            if not li["is_marker"] and li["char_end"] >= idx and li["char_start"] < section_end:
+                section_lines.append(li)
                 
-            # Check if section spans multiple pages
-            section_page_matches = list(re.finditer(r'---\s*PAGE\s+(\d+)\s*---', section_content))
+        if not section_lines:
+            continue
             
-            mapping_info = page_mapping.get(str(pdf_page_start), {})
-            doc_page_number = mapping_info.get("doc_page", "Unknown")
-            document_total_pages = mapping_info.get("total_pages", "Unknown")
-            
-            if section_page_matches:
-                last_pdf_page = int(section_page_matches[-1].group(1))
-                if last_pdf_page != pdf_page_end:
-                    pdf_page_end = last_pdf_page
-                    # Update doc page to range as well if possible
-                    last_mapping = page_mapping.get(str(last_pdf_page), {})
-                    last_doc_page = last_mapping.get("doc_page", "Unknown")
-                    if doc_page_number != "Unknown" and last_doc_page != "Unknown" and doc_page_number != last_doc_page:
-                        doc_page_number = f"{doc_page_number}-{last_doc_page}"
-            
-            pdf_page_number = str(pdf_page_start) if pdf_page_start == pdf_page_end else f"{pdf_page_start}-{pdf_page_end}"
-            
-            line_start = text.count('\n', last_page_idx, idx) + 1
-            line_end = line_start + section_content.count('\n')
-            if line_start == line_end:
-                line_number = str(line_start)
-            else:
-                line_number = f"{line_start}-{line_end}"
-            
-            document_line_start = text.count('\n', 0, idx) + 1
-            document_line_end = document_line_start + section_content.count('\n')
-            
-        # Try to find a printed document page number like "Page 2 of 7" in the section as fallback
-        if doc_page_number == "Unknown" or doc_page_number.startswith("Unknown"):
-            doc_page_match = re.search(r'Page\s+(\d+)(?:\s*(?:of|/)\s*(\d+))?', section_content, re.IGNORECASE)
-            if doc_page_match:
-                doc_page_number = doc_page_match.group(1)
-                document_total_pages = doc_page_match.group(2) if doc_page_match.group(2) else "Unknown"
-            else:
-                doc_page_number = str(pdf_page_number)
-                
-        # Clean the page markers out of the final chunk text so it doesn't confuse the LLM
-        clean_section_content = re.sub(r'\n?---\s*PAGE\s+\d+\s*---\n?', '\n', section_content).strip()
+        clean_section_content = "\n".join([li["text"] for li in section_lines])
         
-        # Add section name context to the chunk
-        context_prefix = f"[{section_name}] "
-        
-        if len(clean_section_content) > 1000:
-            # Sub-chunk if too large, use raw section_content to map exact line numbers
-            sub_chunks = text_splitter.split_text(section_content)
+        if len(clean_section_content) > 2000:
+            sub_chunks = text_splitter.split_text(clean_section_content)
+            current_line_idx = 0
+            
             for sc in sub_chunks:
-                sc_idx = text.find(sc[:100], idx)
-                if sc_idx == -1:
-                    sc_idx = text.find(sc[:50], idx)
-                    
-                sc_pdf_start = pdf_page_start
-                sc_pdf_end = pdf_page_end
-                sc_line_num = line_number
+                sc_lines = sc.split('\n')
+                start_match = -1
+                for i in range(current_line_idx, len(section_lines)):
+                    if section_lines[i]["text"].strip() == sc_lines[0].strip() and sc_lines[0].strip() != "":
+                        start_match = i
+                        break
                 
-                if sc_idx != -1:
-                    page_matches = list(re.finditer(r'---\s*PAGE\s+(\d+)\s*---', text[:sc_idx]))
-                    last_sc_page_idx = 0
-                    if page_matches:
-                        sc_pdf_start = int(page_matches[-1].group(1))
-                        sc_pdf_end = sc_pdf_start
-                        last_sc_page_idx = page_matches[-1].end()
-                        
-                    # Check if sub-chunk spans multiple pages
-                    sc_page_matches = list(re.finditer(r'---\s*PAGE\s+(\d+)\s*---', sc))
-                    
-                    mapping_info = page_mapping.get(str(sc_pdf_start), {})
-                    sc_doc_page = mapping_info.get("doc_page", "Unknown")
-                    sc_total_pages = mapping_info.get("total_pages", "Unknown")
-                    
-                    if sc_page_matches:
-                        sc_last_pdf = int(sc_page_matches[-1].group(1))
-                        if sc_last_pdf != sc_pdf_end:
-                            sc_pdf_end = sc_last_pdf
-                            sc_last_map = page_mapping.get(str(sc_last_pdf), {})
-                            sc_last_doc = sc_last_map.get("doc_page", "Unknown")
-                            if sc_doc_page != "Unknown" and sc_last_doc != "Unknown" and sc_doc_page != sc_last_doc:
-                                sc_doc_page = f"{sc_doc_page}-{sc_last_doc}"
-                                
-                    sc_pdf_page = str(sc_pdf_start) if sc_pdf_start == sc_pdf_end else f"{sc_pdf_start}-{sc_pdf_end}"
-                    
-                    if sc_doc_page == "Unknown" or sc_doc_page.startswith("Unknown"):
-                        sc_doc_page = sc_pdf_page
-                        sc_total_pages = document_total_pages
-                        
-                    sc_line_start = text.count('\n', last_sc_page_idx, sc_idx) + 1
-                    sc_line_end = sc_line_start + sc.count('\n')
-                    sc_line_num = f"{sc_line_start}-{sc_line_end}" if sc_line_start != sc_line_end else str(sc_line_start)
-                    
-                    sc_doc_line_start = text.count('\n', 0, sc_idx) + 1
-                    sc_doc_line_end = sc_doc_line_start + sc.count('\n')
+                if start_match != -1:
+                    end_match = min(start_match + len(sc_lines), len(section_lines))
+                    sc_line_objs = section_lines[start_match:end_match]
+                    current_line_idx = start_match + max(1, len(sc_lines) - 5)
+                else:
+                    sc_line_objs = section_lines
                 
-                # Now clean the page markers out of the sub-chunk before embedding
-                clean_sc = re.sub(r'\n?---\s*PAGE\s+\d+\s*---\n?', '\n', sc).strip()
+                page_ranges = extract_page_ranges(sc_line_objs)
+                final_text = "\n".join([li["text"] for li in sc_line_objs])
                 
                 chunk_meta = metadata.copy()
                 chunk_meta["section"] = section_name
                 chunk_meta["section_number"] = sec_num
                 chunk_meta["clause_number"] = clause_num
-                chunk_meta["page_number"] = sc_pdf_page
-                chunk_meta["pdf_page_start"] = sc_pdf_start
-                chunk_meta["pdf_page_end"] = sc_pdf_end
-                chunk_meta["pdf_page_number"] = sc_pdf_page
-                chunk_meta["document_page_number"] = str(sc_doc_page)
-                chunk_meta["document_total_pages"] = str(sc_total_pages)
-                
-                chunk_meta["page_line_start"] = int(sc_line_start)
-                chunk_meta["page_line_end"] = int(sc_line_end)
-                chunk_meta["document_line_start"] = int(sc_doc_line_start)
-                chunk_meta["document_line_end"] = int(sc_doc_line_end)
-                chunk_meta["line_number"] = sc_line_num
-                
                 chunk_meta["parent_section"] = parent_section
                 chunk_meta["chunk_index"] = chunk_index
                 chunk_meta["chunk_id"] = f"{metadata.get('document_id', 'doc_unknown')}_chunk_{chunk_index}"
+                chunk_meta["page_ranges"] = json.dumps(page_ranges)
+                
                 chunks.append({
-                    "text": context_prefix + clean_sc,
+                    "text": final_text,
                     "metadata": chunk_meta
                 })
                 chunk_index += 1
         else:
+            page_ranges = extract_page_ranges(section_lines)
+            final_text = "\n".join([li["text"] for li in section_lines])
+            
             chunk_meta = metadata.copy()
             chunk_meta["section"] = section_name
             chunk_meta["section_number"] = sec_num
             chunk_meta["clause_number"] = clause_num
-            chunk_meta["page_number"] = pdf_page_number
-            chunk_meta["pdf_page_start"] = pdf_page_start
-            chunk_meta["pdf_page_end"] = pdf_page_end
-            chunk_meta["pdf_page_number"] = pdf_page_number
-            chunk_meta["document_page_number"] = str(doc_page_number)
-            chunk_meta["document_total_pages"] = str(document_total_pages)
-            
-            chunk_meta["page_line_start"] = int(line_start)
-            chunk_meta["page_line_end"] = int(line_end)
-            chunk_meta["document_line_start"] = int(document_line_start)
-            chunk_meta["document_line_end"] = int(document_line_end)
-            chunk_meta["line_number"] = line_number
-            
             chunk_meta["parent_section"] = parent_section
             chunk_meta["chunk_index"] = chunk_index
             chunk_meta["chunk_id"] = f"{metadata.get('document_id', 'doc_unknown')}_chunk_{chunk_index}"
+            chunk_meta["page_ranges"] = json.dumps(page_ranges)
+            
             chunks.append({
-                "text": context_prefix + clean_section_content,
+                "text": final_text,
                 "metadata": chunk_meta
             })
             chunk_index += 1

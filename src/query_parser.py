@@ -7,7 +7,7 @@ def detect_operator(query: str) -> str:
         return "OR"
     if " AND " in query:
         return "AND"
-    return "OR" # Default to OR for better BM25 recall on natural language queries
+    return "AND" # Default to AND for better precision on natural language queries
 
 def classify_query_intent(query: str, llm=None) -> str:
     """
@@ -93,6 +93,8 @@ def decompose_query(query: str, llm=None) -> list:
     If it is a single question, output a list with one string.
     CRITICAL RULE 1: Do NOT split single unified legal concepts (e.g., 'Applicable Laws and Regulations', 'Term and Termination') into multiple questions.
     CRITICAL RULE 2: If the user's query mentions a specific document name, contract title, or context (e.g., 'in the RECIPE DEVELOPMENT AGREEMENT' or 'from document X'), you MUST preserve this document name EXACTLY as written in EVERY sub-question you generate. Do NOT strip it out.
+    CRITICAL RULE 3: Do NOT add quotation marks ("") around any terms or phrases in the sub-questions unless they were explicitly present in the user's original query.
+    CRITICAL RULE 4: Ensure every sub-question is a complete, grammatically correct sentence that retains the original intent. For example, if the original query is "What is X and Y?", the sub-questions MUST be "What is X?" and "What is Y?". Do NOT output fragments like "Y?".
     DO NOT explain. Output ONLY a valid JSON list of strings.
     
     Query: "{query}"
